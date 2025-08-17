@@ -130,6 +130,11 @@ async function fetchPlaylistItemsViaApiV3(playlistIdOrUrl, maxItems, apiKey, deb
 
 async function fetchPlaylistItems(playlistIdOrUrl, maxItems, debug, apiKey) {
   try {
+    // Prefer API v3 if key is provided
+    if (apiKey) {
+      const viaApiFirst = await fetchPlaylistItemsViaApiV3(playlistIdOrUrl, maxItems, apiKey, debug);
+      if (viaApiFirst && viaApiFirst.length) return viaApiFirst;
+    }
     if (debug) {
       try {
         const require = createRequire(import.meta.url);
