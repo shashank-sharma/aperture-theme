@@ -17,6 +17,7 @@ import process from 'node:process';
 import fs from 'node:fs';
 import ytpl from 'ytpl';
 import { Project, SyntaxKind } from 'ts-morph';
+import YAML from 'yaml';
 
 function bar(current, total, width = 28) {
   const pct = total ? Math.min(1, Math.max(0, current / total)) : 1;
@@ -40,7 +41,7 @@ function stringArrayToInitializerText(values) {
 }
 
 function parseArgs(argv) {
-  const out = { playlist: undefined, tag: undefined, max: undefined, outDir: undefined, target: 'src/content/items.ts', force: false, forceUpdate: false };
+  const out = { playlist: undefined, tag: undefined, max: undefined, outDir: undefined, target: 'src/content/items.ts', force: false, forceUpdate: false, all: false, config: 'aperture.config.yml' };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--playlist' || a === '-p') out.playlist = argv[++i];
@@ -50,6 +51,8 @@ function parseArgs(argv) {
     else if (a === '--target') out.target = argv[++i];
     else if (a === '--force' || a === '-f') out.force = true;
     else if (a === '--forceUpdate') out.forceUpdate = true;
+    else if (a === '--all') out.all = true;
+    else if (a === '--config') out.config = argv[++i];
   }
   return out;
 }
@@ -278,8 +281,7 @@ function normalizeToYtId(appId) {
   return appId;
 }
 
-async function main() {
-  const { playlist, tag, max, outDir, target, force, forceUpdate } = parseArgs(process.argv.slice(2));
+async function runSync({ playlist, tag, max, outDir, target, force, forceUpdate }) {
   if (!playlist) fail('Missing --playlist <urlOrId>');
   if (!tag) fail('Missing --tag <string>');
 
@@ -439,6 +441,46 @@ async function main() {
   const addedCount = addIndex;
   console.log(`[aperture-sync] Done. Updated: ${updTotal - removedCount}, Removed tag: ${removedCount}, Added: ${addedCount}`);
   console.log('[aperture-sync] Wrote src/lib/config.ts');
+}
+
+function loadPlaylistsConfig(configPath) {
+  try {
+    const abs = path.isAbsolute(configPath) ? configPath : path.join(process.cwd(), configPath);
+    if (!fs.existsSync(abs)) fail(`Config not found: ${abs}`);
+    const raw = fs.readFileSync(abs, 'utf8');
+    const parsed = YAML.parse(raw) || {};
+    const list = Array.isArray(parsed.playlists) ? parsed.playlists : [];
+    return list.map((p) => ({
+      tag: p && p.tag,
+      playlist: p && p.playlist,
+      outDir: p && p.outDir,
+      max: p && p.max,
+      forceUpdate: !!(p && p.forceUpdate),
+    })).filter((e) => e && e.tag && e.playlist);
+  } catch (e) {
+    fail(`Failed to read playlists from config: ${e && e.message ? e.message : String(e)}`);
+  }
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.all) {
+    const entries = loadPlaylistsConfig(args.config);
+    if (!entries.length) {
+      fail('No playlists found in config. Ensure `playlists` is defined.');
+    }
+    console.log(`[aperture-sync] Syncing ${entries.length} playlists from ${args.config}`);
+    for (const entry of entries) {
+      const playlist = entry.playlist;
+      const tag = entry.tag;
+      const outDir = entry.outDir || args.outDir;
+      const max = Number.isFinite(entry.max) ? entry.max : args.max;
+      const forceUpdate = args.forceUpdate || !!entry.forceUpdate;
+      await runSync({ playlist, tag, max, outDir, target: args.target, force: args.force, forceUpdate });
+    }
+    return;
+  }
+  await runSync(args);
 }
 
 main().catch((err) => fail(err && err.stack ? err.stack : String(err)));
