@@ -47,13 +47,21 @@ jobs:
       - name: Build example (Vite)
         shell: bash
         working-directory: examples
+        env:
+          BASE_OVERRIDE: ${{ vars.PAGES_BASE }}
         run: |
           set -euo pipefail
-          REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          if [[ "${REPO_NAME}" == *.github.io ]]; then
+          if [[ -n "${BASE_OVERRIDE:-}" ]]; then
+            BASE="${BASE_OVERRIDE}"
+          elif [[ -f public/CNAME ]]; then
             BASE="/"
           else
-            BASE="/${REPO_NAME}/"
+            REPO_NAME="${GITHUB_REPOSITORY#*/}"
+            if [[ "${REPO_NAME}" == *.github.io ]]; then
+              BASE="/"
+            else
+              BASE="/${REPO_NAME}/"
+            fi
           fi
           echo "Building with base=${BASE}"
           npm run build --silent -- --base "${BASE}"
