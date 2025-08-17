@@ -33,12 +33,17 @@ export interface GalleryConfig {
   depthBlur?: number; // px blur applied to top/right depth faces
   filters?: string[]; // list of tag filters to display (e.g., ['All','Nature'])
   debug?: boolean; // show dev-only controls like TransformTuner
+  // Fixed card sizing (if set, all cards use these exact dimensions)
+  fixedCardWidth?: number; // px
+  fixedCardHeight?: number; // px
   // Progressive loading
   progressiveThreshold?: number; // if items > threshold, show after eager set
   eagerCount?: number; // number of items to fully preload before showing
   preloadConcurrency?: number; // background preload concurrency
   predictiveBuffer?: number; // how many ahead to prefetch (reserved for future)
   logoSrc?: string; // site logo path (e.g., '/logo.svg')
+  // Virtualization: number of DOM cards to keep mounted
+  virtualPoolSize?: number;
 }
 
 

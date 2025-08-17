@@ -66,7 +66,9 @@
     let filterLoadSeq = 0;
 
     const preloadItems = async (list: GalleryItem[]) => {
-        const total = Math.max(1, list.length);
+        // Limit preloading to a small window around what will be visible to avoid heavy network usage
+        const limited = list.slice(0, Math.min(list.length, poolSize * 2));
+        const total = Math.max(1, limited.length);
         let completed = 0;
         const update = () =>
             (categoryProgress = Math.round((completed / total) * 100));
@@ -99,8 +101,8 @@
             });
         let i = 0;
         const runNext = async (): Promise<void> => {
-            if (i >= list.length) return;
-            const current = list[i++];
+            if (i >= limited.length) return;
+            const current = limited[i++];
             await loadOne(current);
             return runNext();
         };
@@ -127,40 +129,15 @@
 
     const BASE_REPEAT = 1; // minimal buffer for smooth recycling
     const MIN_VISIBLE = 15; // ensure we start with at least this many cards rendered
-    let repeatCount = BASE_REPEAT;
-    $: repeatCount = Math.max(
-        BASE_REPEAT,
-        Math.ceil(MIN_VISIBLE / Math.max(1, filtered.length)),
+    // Virtualization: render a small pool of cards and recycle their content as you scroll
+    const DEFAULT_POOL = 64;
+    let poolSize = Math.max(
+        MIN_VISIBLE,
+        Math.min(256, config?.virtualPoolSize ?? DEFAULT_POOL),
     );
-    let extendedItems: GalleryItem[] = [];
-    $: extendedItems = Array.from({ length: repeatCount }).flatMap((_, r) =>
-        filtered.map((it, idx) => ({ ...it, id: `${it.id}__r${r}__${idx}` })),
-    );
-    $: if (config.debug) {
-        console.debug(
-            "[Gallery] repeatCount=",
-            repeatCount,
-            "extendedItems=",
-            extendedItems.length,
-        );
-    }
-    $: if (config.debug && activeFilter !== "All" && extendedItems.length) {
-        const baseIds = Array.from(
-            new Set(extendedItems.map((e) => e.id.split("__r")[0])),
-        );
-        const wrong = baseIds.filter((id) => {
-            const it = items.find((t) => t.id === id);
-            const tags = it?.tags || [];
-            return !tags.includes(activeFilter);
-        });
-        if (wrong.length) {
-            console.warn(
-                "[Gallery] Non-matching items detected for filter",
-                activeFilter,
-                wrong,
-            );
-        }
-    }
+    let pool = Array.from({ length: poolSize }, (_, i) => ({
+        key: `pool_${i}`,
+    }));
 
     const getLabelText = (item: GalleryItem) => {
         const fromCaption = item.caption?.trim();
@@ -232,19 +209,15 @@
         const gapY = step; // vertical spacing
         const gapZ = config.gap * (isMobile ? 0.22 : 0.3); // slightly tighter in depth on mobile
 
-        const bases: { x: number; y: number }[] = [];
-        const wraps: number[] = [];
-        cards.forEach((card, i) => {
-            const x = i * gapX; // extend to top-right as index increases (diagonal line)
-            const y = -i * gapY;
-            const z = 0; // keep constant depth so apparent size never changes while scrolling
+        // Initialize pool cards with base transforms
+        cards.forEach((card) => {
             const useYaw = parallelEdges ? 0 : yaw;
             gsap.set(card, {
                 xPercent: -50,
                 yPercent: -50,
-                x,
-                y,
-                z,
+                x: 0,
+                y: 0,
+                z: 0,
                 transformPerspective: localPerspective,
                 transformOrigin: "50% 50%",
                 rotateX: pitch,
@@ -254,18 +227,10 @@
                 scale: localScale,
                 opacity: 0,
             });
-            bases.push({ x, y });
-            wraps[i] = 0;
         });
 
         // Intro animation
-        gsap.to(cards, {
-            opacity: 1,
-            duration: 0.8,
-            stagger: 0.05,
-            ease: "power2.out",
-            y: "+=4",
-        });
+        gsap.set(cards, { opacity: 1, y: "+=4" });
 
         // Infinite internal scrolling: move along diagonal and wrap seamlessly
         const vw = typeof window !== "undefined" ? window.innerWidth : 1920;
@@ -286,37 +251,89 @@
             lastRandomizedKey = randomKey;
         }
 
+        const updateCardMedia = (card: HTMLElement, item: GalleryItem) => {
+            if (!item) return;
+            const currentId = card.dataset.itemId;
+            if (currentId === item.id) return;
+            card.dataset.itemId = item.id;
+            // Front face
+            const front = card.querySelector<HTMLElement>(".face.front");
+            const imgFront =
+                front?.querySelector<HTMLImageElement>("img.media-img");
+            const vidFront =
+                front?.querySelector<HTMLVideoElement>("video.media-video");
+            if (item.kind === "image" || item.kind === "yt-video") {
+                if (vidFront) {
+                    vidFront.pause?.();
+                    vidFront.removeAttribute("src");
+                    (vidFront as any).load?.();
+                    (vidFront as HTMLElement).style.display = "none";
+                }
+                if (imgFront) {
+                    imgFront.decoding = "async" as any;
+                    imgFront.loading = "lazy";
+                    imgFront.src = item.src;
+                    imgFront.alt = item.alt || "";
+                    (imgFront as HTMLElement).style.display = "block";
+                }
+            } else {
+                if (imgFront) {
+                    imgFront.removeAttribute("src");
+                    (imgFront as HTMLElement).style.display = "none";
+                }
+                if (vidFront) {
+                    vidFront.preload = "metadata";
+                    vidFront.muted = true;
+                    vidFront.playsInline = true as any;
+                    vidFront.src = item.src;
+                    (vidFront as HTMLElement).style.display = "block";
+                }
+            }
+            // Right and top faces mirror images only
+            const rightImg = card.querySelector<HTMLImageElement>(
+                ".face.right img.media-edge",
+            );
+            const topImg = card.querySelector<HTMLImageElement>(
+                ".face.top img.media-edge",
+            );
+            if (
+                rightImg &&
+                (item.kind === "image" || item.kind === "yt-video")
+            ) {
+                rightImg.src = item.src;
+            } else if (rightImg) {
+                rightImg.removeAttribute("src");
+            }
+            if (topImg && (item.kind === "image" || item.kind === "yt-video")) {
+                topImg.src = item.src;
+            } else if (topImg) {
+                topImg.removeAttribute("src");
+            }
+            // Label
+            const label = card.querySelector<HTMLElement>(".floor-label__text");
+            if (label) label.textContent = getLabelText(item);
+        };
+
         const update = () => {
             // Smooth follow – lower factor = smoother/slower
             const follow = Math.min(0.045, config.inertia);
             progress += (targetProgress - progress) * follow;
-            // move each card and recycle its base when far off-screen to avoid any jump
+            // Compute global index window for current pool
+            const baseIndex =
+                Math.floor(progress / step) - Math.floor(cards.length / 2);
             cards.forEach((card, i) => {
-                let xPos = bases[i].x - startX - progress;
-                let yPos = bases[i].y + startY + progress;
-
-                // Recycle forward (moving left/down out of view)
-                if (xPos < -recycleAheadX || yPos > recycleAheadY) {
-                    bases[i].x += cycle;
-                    bases[i].y -= cycle;
-                    wraps[i] += 1;
-                    xPos += cycle;
-                    yPos -= cycle;
-                }
-                // Recycle backward (moving right/up out of view)
-                if (xPos > recycleAheadX || yPos < -recycleAheadY) {
-                    bases[i].x -= cycle;
-                    bases[i].y += cycle;
-                    wraps[i] -= 1;
-                    xPos -= cycle;
-                    yPos += cycle;
-                }
-                const depthIndex = i + wraps[i] * originalCount;
+                const globalIndex = baseIndex + i;
+                // Use integer pixel positions to reduce sub-pixel jitter
+                const xBase = Math.round(globalIndex * gapX);
+                const yBase = Math.round(-globalIndex * gapY);
+                const xPos = Math.round(xBase - startX - progress);
+                const yPos = Math.round(yBase + startY + progress);
+                const depthIndex = globalIndex;
                 const useYaw2 = parallelEdges ? 0 : yaw;
                 gsap.set(card, {
                     x: xPos,
                     y: yPos,
-                    z: 0, // fixed depth during scroll
+                    z: 0,
                     zIndex: 100000 - depthIndex,
                     rotateX: pitch,
                     rotateY: useYaw2,
@@ -325,16 +342,36 @@
                     scale: localScale,
                     transformPerspective: localPerspective,
                     transformOrigin: "50% 50%",
+                    opacity: 1,
                 });
 
-                // Keep label screen-facing (billboard) regardless of card rotation
+                // Update the media content for this virtual position
+                const wrappedIndex =
+                    ((globalIndex % originalCount) + originalCount) %
+                    originalCount;
+                const item = filtered[wrappedIndex];
+                // Pre-set aspect from metadata (if available) to avoid flicker before image load
+                const slab = card.querySelector<HTMLElement>(".slab");
+                if (slab) {
+                    if (item?.width && item?.height) {
+                        slab.style.setProperty(
+                            "--aspect",
+                            String(item.width / item.height),
+                        );
+                    } else {
+                        slab.style.setProperty("--aspect", "1.3333333");
+                    }
+                }
+                updateCardMedia(card, item);
+
+                // Keep label screen-facing (billboard)
                 const label = card.querySelector<HTMLElement>(".floor-label");
                 if (label) {
                     gsap.set(label, {
                         rotateX: -pitch,
                         rotateY: 0,
                         rotateZ: 0,
-                        z: 16, // raise slightly above front face to avoid clipping
+                        z: 16,
                         transformPerspective: localPerspective,
                         transformOrigin: "top left",
                     });
@@ -349,7 +386,7 @@
             const delta =
                 Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : -e.deltaX; // allow shift/trackpads
             // Slow down wheel sensitivity
-            targetProgress = targetProgress + delta * (step * 0.02);
+            targetProgress = targetProgress + delta * (step * 0.016);
         };
         container.addEventListener("wheel", onWheel, { passive: false });
         // Arrow/Page keys
@@ -394,7 +431,7 @@
             lastY = e.clientY;
             lastX = e.clientX;
             // Reduce drag speed for smoother feel
-            targetProgress = targetProgress + (dy + dx) * (step * 0.06);
+            targetProgress = targetProgress + (dy + dx) * (step * 0.05);
         };
         container.addEventListener("pointerdown", onPointerDown);
         container.addEventListener("pointerup", onPointerUp);
@@ -610,63 +647,54 @@
         </div>
     {:else}
         <div class="track" bind:this={track}>
-            {#each extendedItems as item, i (item.id)}
+            {#each pool as p, i (p.key)}
                 <button
                     class="card"
                     style={`--i:${i}`}
                     type="button"
-                    on:click={() =>
-                        openLightbox(
-                            items.findIndex(
-                                (it) => it.id === item.id.split("__r")[0],
-                            ),
-                        )}
+                    on:click={(e) => {
+                        const id =
+                            (e.currentTarget as HTMLElement)?.dataset?.itemId ||
+                            "";
+                        const baseId = String(id);
+                        const idx = items.findIndex((it) => it.id === baseId);
+                        if (idx >= 0) openLightbox(idx);
+                    }}
                 >
                     <div
                         class="slab"
-                        style={`--t:${config.thickness ?? 12}px; --ea:${config.edgeAmplify ?? 1.4}; --db:${config.depthBlur ?? 0}px;`}
+                        style={`--t:${config.thickness ?? 12}px; --ea:${config.edgeAmplify ?? 1.4}; --db:${config.depthBlur ?? 0}px;${config.fixedCardWidth ? ` --w:${config.fixedCardWidth}px; --max-w:none;` : ""}${config.fixedCardHeight ? ` --h:${config.fixedCardHeight}px; --max-h:none;` : ""}`}
                     >
                         <div class="face front">
-                            {#if item.kind === "image" || item.kind === "yt-video"}
-                                <img
-                                    src={item.src}
-                                    alt={item.alt}
-                                    loading="lazy"
-                                    on:load={(e) =>
-                                        setAspectFromImage(
-                                            e.currentTarget as HTMLImageElement,
-                                        )}
-                                />
-                            {:else}
-                                <video
-                                    src={item.src}
-                                    muted
-                                    playsinline
-                                    preload="metadata"
-                                    on:loadedmetadata={(e) =>
-                                        setAspectFromVideo(
-                                            e.currentTarget as HTMLVideoElement,
-                                        )}
-                                ></video>
-                            {/if}
+                            <img
+                                class="media-img"
+                                alt=""
+                                loading="lazy"
+                                on:load={(e) =>
+                                    setAspectFromImage(
+                                        e.currentTarget as HTMLImageElement,
+                                    )}
+                            />
+                            <video
+                                class="media-video"
+                                muted
+                                playsinline
+                                preload="metadata"
+                                on:loadedmetadata={(e) =>
+                                    setAspectFromVideo(
+                                        e.currentTarget as HTMLVideoElement,
+                                    )}
+                            ></video>
                         </div>
                         <div class="face right" aria-hidden="true">
-                            {#if item.kind === "image" || item.kind === "yt-video"}
-                                <img src={item.src} alt="" />
-                            {/if}
+                            <img class="media-edge" alt="" />
                         </div>
                         <div class="face top" aria-hidden="true">
-                            {#if item.kind === "image" || item.kind === "yt-video"}
-                                <img src={item.src} alt="" />
-                            {/if}
+                            <img class="media-edge" alt="" />
                         </div>
-                        {#if getLabelText(item)}
-                            <div class="floor-label" aria-hidden="true">
-                                <span class="floor-label__text"
-                                    >{getLabelText(item)}</span
-                                >
-                            </div>
-                        {/if}
+                        <div class="floor-label" aria-hidden="true">
+                            <span class="floor-label__text"></span>
+                        </div>
                     </div>
                 </button>
             {/each}
@@ -852,9 +880,9 @@
             --w,
             min(76vw, var(--base, 520px), calc(85vh * var(--aspect, 4 / 3)))
         );
-        height: auto;
-        max-width: var(--base, 520px);
-        max-height: min(var(--base, 520px), 85vh);
+        height: var(--h, auto);
+        max-width: var(--max-w, var(--base, 520px));
+        max-height: var(--max-h, min(var(--base, 520px), 85vh));
         aspect-ratio: var(--aspect, 4 / 3);
         border-radius: 0;
         overflow: visible;

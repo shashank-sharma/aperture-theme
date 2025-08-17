@@ -602,7 +602,7 @@ async function main() {
       const outDir = entry.outDir || args.outDir;
       const max = Number.isFinite(entry.max) ? entry.max : args.max;
       const forceUpdate = args.forceUpdate || !!entry.forceUpdate;
-      await runSync({ playlist, tag, max, outDir, target: args.target, force: args.force, forceUpdate, debug: args.debug });
+      await runSync({ playlist, tag, max, outDir, target: args.target, force: args.force, forceUpdate, debug: args.debug, ytApiKey: args.ytApiKey });
     }
     return;
   }
