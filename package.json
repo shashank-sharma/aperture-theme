@@ -1,6 +1,6 @@
 {
   "name": "@shashank-sharma/aperture-theme",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "private": false,
   "type": "module",
   "description": "Svelte 5 gallery/lightbox theme with 3D transforms and GitHub Pages-ready demo",
@@ -18,8 +18,18 @@
       "require": "./src/index.ts"
     }
   },
-  "sideEffects": ["**/*.css", "src/app.css"],
-  "keywords": ["svelte", "gallery", "lightbox", "vite", "theme", "github-pages"],
+  "sideEffects": [
+    "**/*.css",
+    "src/app.css"
+  ],
+  "keywords": [
+    "svelte",
+    "gallery",
+    "lightbox",
+    "vite",
+    "theme",
+    "github-pages"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/shashank-sharma/aperture-theme.git"
@@ -54,7 +64,7 @@
   "dependencies": {
     "gsap": "^3.12.7",
     "ts-morph": "^22.0.0",
-    "ytpl": "^2.3.0",
-    "yaml": "^2.6.0"
+    "yaml": "^2.6.0",
+    "ytpl": "^2.3.0"
   }
 }

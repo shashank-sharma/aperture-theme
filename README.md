@@ -135,3 +135,68 @@ Note: generated item src paths are relative (e.g., `media/yt/abc.webp`) to work 
 Then review changes in your target file (`src/content/items.ts` for consumers or `examples/src/content/items.ts` in this repo), adjust as needed, commit, and run `npm run build`.
 
 
+### CLI flags
+
+- `--playlist, -p`: YouTube playlist URL or ID (required)
+- `--tag, -t`: Tag to apply to generated items (required)
+- `--outDir, -o`: Thumbnails output dir (default: `public/media/yt`)
+- `--target`: Items file to write/append (default: `src/content/items.ts`)
+- `--max, -m`: Limit number of items fetched
+- `--force`: Download file if missing (skip re-download when exists)
+- `--forceUpdate`: Always re-download thumbnails
+- `--all`: Read multiple entries from a YAML config
+- `--config`: Config file path (default: `aperture.config.yml`)
+- `--debug, -d`: Verbose logging for troubleshooting
+
+### Large playlists and API fallback
+
+YouTube sometimes breaks `ytpl` pagination for large playlists, resulting in errors like “Cannot read properties of undefined (reading 'token')”. The CLI supports an API fallback using YouTube Data API v3.
+
+Use one of the following:
+
+```bash
+# Via environment variable
+export YT_API_KEY=YOUR_API_KEY
+npx aperture-sync -p <PLAYLIST> -t <TAG> --debug
+
+# Or via a flag
+npx aperture-sync -p <PLAYLIST> -t <TAG> --debug --ytApiKey YOUR_API_KEY
+```
+
+How to get an API key (short):
+1. Open Google Cloud Console → create/select a project.
+2. APIs & Services → Library → enable “YouTube Data API v3”.
+3. APIs & Services → Credentials → Create credentials → API key.
+4. (Optional) Restrict the key to the YouTube Data API v3.
+
+Notes:
+- Quota defaults to ~10k units/day. `playlistItems.list` is 1 unit per request (50 items/page).
+- Without a key, the CLI still tries to fetch, but large playlists may fail depending on YouTube changes.
+
+### Sync multiple playlists via config
+
+Create an `aperture.config.yml` in your project (see `examples/aperture.config.yml`):
+
+```yaml
+playlists:
+  - tag: "Gaming"
+    playlist: "https://www.youtube.com/playlist?list=XXXX"
+    outDir: "public/media/yt"
+    forceUpdate: false
+```
+
+Run:
+
+```bash
+npx aperture-sync --all --config aperture.config.yml --target src/content/items.ts
+```
+
+### Troubleshooting
+
+- Ensure Node 22+.
+- Try updating the `ytpl` dependency in your host app:
+  ```bash
+  npm i ytpl@latest
+  ```
+- If you still hit pagination errors, use the API fallback with `YT_API_KEY` or `--ytApiKey`.
+

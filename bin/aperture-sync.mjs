@@ -15,6 +15,7 @@ Examples:
 import path from 'node:path';
 import process from 'node:process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import ytpl from 'ytpl';
 import { Project, SyntaxKind } from 'ts-morph';
 import YAML from 'yaml';
@@ -41,7 +42,7 @@ function stringArrayToInitializerText(values) {
 }
 
 function parseArgs(argv) {
-  const out = { playlist: undefined, tag: undefined, max: undefined, outDir: undefined, target: 'src/content/items.ts', force: false, forceUpdate: false, all: false, config: 'aperture.config.yml' };
+  const out = { playlist: undefined, tag: undefined, max: undefined, outDir: undefined, target: 'src/content/items.ts', force: false, forceUpdate: false, all: false, config: 'aperture.config.yml', debug: false, ytApiKey: process.env.YT_API_KEY || undefined };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--playlist' || a === '-p') out.playlist = argv[++i];
@@ -53,6 +54,8 @@ function parseArgs(argv) {
     else if (a === '--forceUpdate') out.forceUpdate = true;
     else if (a === '--all') out.all = true;
     else if (a === '--config') out.config = argv[++i];
+    else if (a === '--debug' || a === '-d') out.debug = true;
+    else if (a === '--ytApiKey') out.ytApiKey = argv[++i];
   }
   return out;
 }
@@ -62,8 +65,94 @@ function fail(msg) {
   process.exit(1);
 }
 
-async function fetchPlaylistItems(playlistIdOrUrl, maxItems) {
+async function fetchPlaylistItemsViaApiV3(playlistIdOrUrl, maxItems, apiKey, debug) {
+  if (!apiKey) return undefined;
   try {
+    // Resolve playlist ID
+    let playlistId = '';
+    try {
+      if (typeof ytpl.getPlaylistID === 'function') {
+        playlistId = await ytpl.getPlaylistID(playlistIdOrUrl);
+      }
+    } catch (_) {}
+    if (!playlistId) {
+      try {
+        const u = new URL(String(playlistIdOrUrl));
+        const listId = u.searchParams.get('list');
+        if (listId) playlistId = listId;
+      } catch (_) {
+        playlistId = String(playlistIdOrUrl);
+      }
+    }
+    if (!playlistId) throw new Error('Could not resolve playlist ID for API v3 fallback');
+    if (debug) console.log(`[aperture-sync][debug] API v3 fallback for playlistId=${playlistId}`);
+
+    const maxResultsPerPage = 50;
+    const wanted = Number.isFinite(maxItems) && maxItems > 0 ? maxItems : Infinity;
+    const collected = [];
+    let pageToken = '';
+    while (collected.length < wanted) {
+      const base = 'https://www.googleapis.com/youtube/v3/playlistItems';
+      const params = new URLSearchParams({
+        part: 'snippet',
+        maxResults: String(Math.min(maxResultsPerPage, isFinite(wanted) ? wanted - collected.length : maxResultsPerPage)),
+        playlistId,
+        key: apiKey,
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+      const url = `${base}?${params.toString()}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`YouTube API v3 error ${res.status}: ${txt.slice(0, 300)}`);
+      }
+      const data = await res.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      for (const it of items) {
+        const snippet = it && it.snippet;
+        const videoId = snippet && snippet.resourceId && snippet.resourceId.videoId;
+        if (!videoId) continue;
+        const title = (snippet && snippet.title) || '';
+        const thumbs = (snippet && snippet.thumbnails) || {};
+        const thumbUrl = (thumbs.maxres && thumbs.maxres.url) || (thumbs.standard && thumbs.standard.url) || (thumbs.high && thumbs.high.url) || (thumbs.medium && thumbs.medium.url) || (thumbs.default && thumbs.default.url) || '';
+        collected.push({ ytId: videoId, title, url: `https://www.youtube.com/watch?v=${videoId}`, thumbnail: thumbUrl });
+      }
+      if (!data.nextPageToken || !items.length) break;
+      pageToken = data.nextPageToken;
+    }
+    if (debug) console.log(`[aperture-sync][debug] API v3 fetched ${collected.length} items`);
+    return collected;
+  } catch (e) {
+    if (debug) console.log(`[aperture-sync][debug] API v3 fallback failed: ${e && e.message ? e.message : String(e)}`);
+    return undefined;
+  }
+}
+
+async function fetchPlaylistItems(playlistIdOrUrl, maxItems, debug, apiKey) {
+  try {
+    if (debug) {
+      try {
+        const require = createRequire(import.meta.url);
+        const ytplPkg = require('ytpl/package.json');
+        console.log(`[aperture-sync][debug] Node: ${process.version}, ytpl: ${ytplPkg && ytplPkg.version ? ytplPkg.version : 'unknown'}`);
+      } catch (_) {
+        console.log(`[aperture-sync][debug] Node: ${process.version}, ytpl: unknown`);
+      }
+      try {
+        const isValid = typeof ytpl.validateID === 'function' ? ytpl.validateID(playlistIdOrUrl) : 'n/a';
+        console.log(`[aperture-sync][debug] validateID: ${isValid}`);
+      } catch (e) {
+        console.log(`[aperture-sync][debug] validateID check failed: ${e && e.message ? e.message : String(e)}`);
+      }
+      try {
+        if (typeof ytpl.getPlaylistID === 'function') {
+          const resolved = await ytpl.getPlaylistID(playlistIdOrUrl);
+          console.log(`[aperture-sync][debug] getPlaylistID: ${resolved}`);
+        }
+      } catch (e) {
+        console.log(`[aperture-sync][debug] getPlaylistID failed: ${e && e.message ? e.message : String(e)}`);
+      }
+    }
     const result = await ytpl(playlistIdOrUrl, {
       pages: Infinity,
       limit: maxItems && Number.isFinite(maxItems) ? maxItems : Infinity,
@@ -79,6 +168,34 @@ async function fetchPlaylistItems(playlistIdOrUrl, maxItems) {
           : ''),
     }));
   } catch (err) {
+    if (debug) {
+      console.error('[aperture-sync][debug] ytpl error:', err && err.stack ? err.stack : err);
+    }
+    // Fallback 1: Use YouTube Data API v3 if key is provided
+    const viaApi = await fetchPlaylistItemsViaApiV3(playlistIdOrUrl, maxItems, apiKey, debug);
+    if (viaApi && viaApi.length) return viaApi;
+    // Fallback 2: Attempt a single-page fetch with ytpl to at least get first ~page
+    try {
+      if (debug) console.log('[aperture-sync][debug] trying ytpl single-page fallback');
+      const firstPage = await ytpl(playlistIdOrUrl, {
+        pages: 1,
+        limit: maxItems && Number.isFinite(maxItems) ? maxItems : 100,
+      });
+      if (firstPage && Array.isArray(firstPage.items) && firstPage.items.length) {
+        return firstPage.items.map((it) => ({
+          ytId: it.id,
+          title: it.title || '',
+          url: (it.url && typeof it.url === 'string' ? it.url : `https://www.youtube.com/watch?v=${it.id}`),
+          thumbnail:
+            (it.bestThumbnail && it.bestThumbnail.url) ||
+            (Array.isArray(it.thumbnails) && it.thumbnails.length
+              ? it.thumbnails[it.thumbnails.length - 1].url
+              : ''),
+        }));
+      }
+    } catch (e2) {
+      if (debug) console.log(`[aperture-sync][debug] ytpl single-page fallback failed: ${e2 && e2.message ? e2.message : String(e2)}`);
+    }
     fail(`Failed to fetch playlist: ${(err && err.message) || err}`);
   }
 }
@@ -281,7 +398,7 @@ function normalizeToYtId(appId) {
   return appId;
 }
 
-async function runSync({ playlist, tag, max, outDir, target, force, forceUpdate }) {
+async function runSync({ playlist, tag, max, outDir, target, force, forceUpdate, debug, ytApiKey }) {
   if (!playlist) fail('Missing --playlist <urlOrId>');
   if (!tag) fail('Missing --tag <string>');
 
@@ -298,8 +415,12 @@ async function runSync({ playlist, tag, max, outDir, target, force, forceUpdate 
   console.log(`[aperture-sync] Starting sync`);
   console.log(`  playlist: ${playlist}`);
   console.log(`  tag:      ${tag}` + (max ? `  (max ${max})` : ''));
+  if (debug) {
+    console.log(`[aperture-sync][debug] options: ${JSON.stringify({ max, outDir, target, force, forceUpdate })}`);
+    if (ytApiKey) console.log('[aperture-sync][debug] ytApiKey provided (length hidden)');
+  }
 
-  const fetched = await fetchPlaylistItems(playlist, max);
+  const fetched = await fetchPlaylistItems(playlist, max, debug, ytApiKey);
   if (!Array.isArray(fetched) || fetched.length === 0) {
     console.log('[aperture-sync] No items returned from the playlist. Exiting.');
     process.exit(0);
@@ -476,7 +597,7 @@ async function main() {
       const outDir = entry.outDir || args.outDir;
       const max = Number.isFinite(entry.max) ? entry.max : args.max;
       const forceUpdate = args.forceUpdate || !!entry.forceUpdate;
-      await runSync({ playlist, tag, max, outDir, target: args.target, force: args.force, forceUpdate });
+      await runSync({ playlist, tag, max, outDir, target: args.target, force: args.force, forceUpdate, debug: args.debug });
     }
     return;
   }
