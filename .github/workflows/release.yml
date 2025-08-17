@@ -3,35 +3,43 @@ name: Publish to GitHub Packages
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'
   workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node (GitHub Packages)
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
           registry-url: 'https://npm.pkg.github.com'
           scope: '@shashank-sharma'
 
-      - name: Install deps
-        run: npm ci
+      - name: Install dependencies (no scripts)
+        env:
+          NPM_CONFIG_IGNORE_SCRIPTS: 'true'
+        run: npm ci --ignore-scripts
 
-      - name: Build
-        run: npm run build
+      - name: Validate package can be packed (no scripts)
+        env:
+          NPM_CONFIG_IGNORE_SCRIPTS: 'true'
+        run: npm pack
 
-      - name: Publish
+      - name: Publish to GitHub Packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm publish
+          NPM_CONFIG_IGNORE_SCRIPTS: 'true'
+        run: npm publish --provenance --access public
 
 

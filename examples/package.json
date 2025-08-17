@@ -8,9 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --port 5183"
   },
-  "dependencies": {
-    "@shashank-sharma/aperture-theme": "file:.."
-  },
+  "dependencies": {},
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.1.2",
     "svelte": "^5.38.1",
