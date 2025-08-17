@@ -1,0 +1,27 @@
+# Aperture Theme – Project Configuration
+# This file is intended to be read by local scripts
+# to automate playlist syncing, builds, deploys, and basic site metadata.
+
+site:
+  title: "Aperture – Visual Gallery"
+  description: "Image/Video Gallery"
+  logo:
+    src: "/aperture.svg"
+    darkInvert: true
+  loading:
+    portalSrc: "/aperture.svg"
+  siteName: "Aperture"
+  locale: "en_US"
+  robots: "index,follow"
+  socials:
+    github: "https://github.com/shashank-sharma/aperture-theme"
+    twitter: "https://twitter.com/shashank_py"
+    # youtube: "https://youtube.com/@youtube"
+    links:
+      - { label: "Website", href: "https://shashanksharma.xyz" }
+
+# playlists:
+#   - tag: "tag"
+#     playlist: "https://www.youtube.com/playlist?list=abcd"
+#     outDir: "public/media/yt"
+#     forceUpdate: false

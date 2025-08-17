@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+
+# OS / IDE / tooling
+.DS_Store
+.idea/
+.vscode/
+.fleet/
+
+# Vite / Svelte / Caches
+.vite/
+.svelte-kit/
+.cache/
+.parcel-cache/
+.eslintcache
+
+# Env files
+.env
+.env.*
+*.local
+.npmrc
+
+# Misc
+coverage/
+.turbo/
+.vercel/
+.netlify/
+
+# Generated package tarballs
+*.tgz
+
+

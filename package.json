@@ -1,0 +1,62 @@
+{
+  "name": "@shashank-sharma/aperture-theme",
+  "version": "0.0.1",
+  "private": false,
+  "type": "module",
+  "description": "Svelte 5 gallery/lightbox theme with 3D transforms and GitHub Pages-ready demo",
+  "license": "MIT",
+  "svelte": "./src/index.ts",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "bin": {
+    "aperture-sync": "./bin/aperture-sync.mjs"
+  },
+  "exports": {
+    ".": {
+      "svelte": "./src/index.ts",
+      "import": "./src/index.ts",
+      "require": "./src/index.ts"
+    }
+  },
+  "sideEffects": ["**/*.css", "src/app.css"],
+  "keywords": ["svelte", "gallery", "lightbox", "vite", "theme", "github-pages"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shashank-sharma/aperture-theme.git"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm --prefix examples run dev",
+    "build": "npm --prefix examples run build",
+    "preview": "npm --prefix examples run preview",
+    "sync": "node bin/aperture-sync.mjs"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "peerDependencies": {
+    "svelte": ">=5.0.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.1.2",
+    "svelte": "^5.38.1",
+    "typescript": "^5.6.2",
+    "vite": "^7.1.2"
+  },
+  "dependencies": {
+    "gsap": "^3.12.7",
+    "ts-morph": "^22.0.0",
+    "ytpl": "^2.3.0",
+    "yaml": "^2.6.0"
+  }
+}
+
+

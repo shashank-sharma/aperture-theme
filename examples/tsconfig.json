@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["svelte"],
+    "moduleResolution": "bundler"
+  },
+  "include": ["src/**/*", "index.html"]
+}
+
+

@@ -1,0 +1,989 @@
+<script lang="ts">
+    import { onMount, tick } from "svelte";
+    // Social links are provided by parent (App) to avoid bundling a local config file in packages
+    export let socials: Record<string, string> = {};
+    import gsap from "gsap";
+    (gsap as any).config({ skewType: "simple", force3D: true });
+    import type { GalleryConfig, GalleryItem } from "../types";
+    import { transformStore } from "../stores/transform";
+
+    export let items: GalleryItem[] = [];
+    export let config: GalleryConfig;
+    // Control visibility of filter UI from parent (e.g., hide when lightbox is open)
+    export let showFilters: boolean = true;
+    // Tag filtering
+    let activeFilter: string = "All";
+    const allFilters = () => {
+        if (config.filters && config.filters.length) return config.filters;
+        const set = new Set<string>();
+        for (const it of items) {
+            for (const t of it.tags || []) set.add(t);
+        }
+        const tags = Array.from(set);
+        return ["All", ...tags];
+    };
+    const slugify = (s: string) =>
+        s
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^[-]+|[-]+$/g, "");
+    const findFilterForPath = (path: string) => {
+        const seg = (path || "/").split("?")[0];
+        if (seg === "/" || seg === "") return "All";
+        const name = decodeURIComponent(seg.replace(/^\//, ""));
+        const match = allFilters().find((f) => slugify(f) === slugify(name));
+        return match || "All";
+    };
+    const navigateToFilter = (f: string) => {
+        const isAll = f === "All";
+        const target = isAll ? "/" : `/${slugify(f)}`;
+        try {
+            history.pushState({ tag: f }, "", target);
+        } catch {}
+    };
+    const normalize = (s: string) => s.trim().toLowerCase();
+    const otherFilterSet = () =>
+        new Set(
+            allFilters()
+                .map(normalize)
+                .filter((f) => f !== "all" && f !== "others"),
+        );
+    const belongsToFilter = (it: GalleryItem, filter: string): boolean => {
+        const nf = normalize(filter);
+        if (nf === "all") return true;
+        const tags = (it.tags || []).map(normalize);
+        if (nf === "others") {
+            const others = otherFilterSet();
+            return tags.length === 0 || tags.every((t) => !others.has(t));
+        }
+        return tags.includes(nf);
+    };
+    $: filtered = items.filter((it) => belongsToFilter(it, activeFilter));
+    // Local loading state when switching categories
+    let isCategoryLoading = false;
+    let categoryProgress = 0;
+    let filterLoadSeq = 0;
+
+    const preloadItems = async (list: GalleryItem[]) => {
+        const total = Math.max(1, list.length);
+        let completed = 0;
+        const update = () =>
+            (categoryProgress = Math.round((completed / total) * 100));
+        const concurrency = Math.max(1, config.preloadConcurrency ?? 4);
+        const loadOne = (m: GalleryItem) =>
+            new Promise<void>((resolve) => {
+                const finish = () => {
+                    completed += 1;
+                    update();
+                    resolve();
+                };
+                if (m.kind === "image" || m.kind === "yt-video") {
+                    const img = new Image();
+                    img.decoding = "async" as any;
+                    img.loading = "eager" as any;
+                    img.addEventListener("load", finish, { once: true } as any);
+                    img.addEventListener("error", finish, {
+                        once: true,
+                    } as any);
+                    img.src = m.src;
+                } else {
+                    const vid = document.createElement("video");
+                    vid.preload = "auto";
+                    vid.muted = true;
+                    const onDone = () => finish();
+                    vid.addEventListener("loadeddata", onDone, { once: true });
+                    vid.addEventListener("error", onDone, { once: true });
+                    vid.src = m.src;
+                }
+            });
+        let i = 0;
+        const runNext = async (): Promise<void> => {
+            if (i >= list.length) return;
+            const current = list[i++];
+            await loadOne(current);
+            return runNext();
+        };
+        await Promise.all(Array.from({ length: concurrency }, runNext));
+    };
+    // Debug: log filtering results and repetition (guarded by config.debug)
+    $: if (config.debug) {
+        console.debug("[Gallery] activeFilter=", activeFilter, {
+            filteredCount: filtered.length,
+            filteredIds: filtered.map((i) => i.id),
+        });
+    }
+
+    export const activeIndex = 0;
+    export let openLightbox: (i: number) => void;
+
+    let container: HTMLElement;
+    let track: HTMLElement;
+    let rafId: number | null = null;
+    let progress = 0; // animated scroll distance in px along diagonal
+    let targetProgress = 0; // immediate scroll distance in px
+    // Track last filter for which we randomized the start offset
+    let lastRandomizedKey: string | null = null;
+
+    const BASE_REPEAT = 1; // minimal buffer for smooth recycling
+    const MIN_VISIBLE = 15; // ensure we start with at least this many cards rendered
+    let repeatCount = BASE_REPEAT;
+    $: repeatCount = Math.max(
+        BASE_REPEAT,
+        Math.ceil(MIN_VISIBLE / Math.max(1, filtered.length)),
+    );
+    let extendedItems: GalleryItem[] = [];
+    $: extendedItems = Array.from({ length: repeatCount }).flatMap((_, r) =>
+        filtered.map((it, idx) => ({ ...it, id: `${it.id}__r${r}__${idx}` })),
+    );
+    $: if (config.debug) {
+        console.debug(
+            "[Gallery] repeatCount=",
+            repeatCount,
+            "extendedItems=",
+            extendedItems.length,
+        );
+    }
+    $: if (config.debug && activeFilter !== "All" && extendedItems.length) {
+        const baseIds = Array.from(
+            new Set(extendedItems.map((e) => e.id.split("__r")[0])),
+        );
+        const wrong = baseIds.filter((id) => {
+            const it = items.find((t) => t.id === id);
+            const tags = it?.tags || [];
+            return !tags.includes(activeFilter);
+        });
+        if (wrong.length) {
+            console.warn(
+                "[Gallery] Non-matching items detected for filter",
+                activeFilter,
+                wrong,
+            );
+        }
+    }
+
+    const getLabelText = (item: GalleryItem) => {
+        const fromCaption = item.caption?.trim();
+        const fromAlt = item.alt?.trim();
+        const fromSrc = (() => {
+            try {
+                const url = new URL(
+                    item.src,
+                    typeof window !== "undefined"
+                        ? window.location.href
+                        : "http://local",
+                );
+                const name = url.pathname.split("/").pop() || "";
+                return name || undefined;
+            } catch (_) {
+                const parts = (item.src || "").split("/");
+                return parts[parts.length - 1] || undefined;
+            }
+        })();
+        return fromCaption || fromAlt || fromSrc || "";
+    };
+
+    // Adapt slab aspect to media to avoid letterboxing bars
+    function setAspectFromImage(el: HTMLImageElement) {
+        const slab = el.closest(".slab") as HTMLElement | null;
+        if (!slab) return;
+        const w = el.naturalWidth || 0;
+        const h = el.naturalHeight || 0;
+        if (w > 0 && h > 0) slab.style.setProperty("--aspect", String(w / h));
+    }
+    function setAspectFromVideo(el: HTMLVideoElement) {
+        const slab = el.closest(".slab") as HTMLElement | null;
+        if (!slab) return;
+        const w = (el as any).videoWidth || 0;
+        const h = (el as any).videoHeight || 0;
+        if (w > 0 && h > 0) slab.style.setProperty("--aspect", String(w / h));
+    }
+
+    // Uniform down-left layout with identical rotation and even spacing
+    const applyBookshelfLayout = () => {
+        const cards = track.querySelectorAll<HTMLElement>(".card");
+
+        let yaw = -30; // initial
+        let pitch = 0;
+        let roll = 0;
+        let localPerspective = config.perspective;
+        let localSkewX = 0;
+        let localScale = 1;
+        let parallelEdges = true;
+        // ensure a single active subscription
+        let unsubscribeTransform = transformStore.subscribe((t) => {
+            pitch = t.rotateX;
+            yaw = t.rotateY;
+            roll = t.rotateZ;
+            localPerspective = t.perspective || config.perspective;
+            localSkewX = t.skewX || 0;
+            localScale = t.scale || 1;
+            parallelEdges = t.parallelEdges ?? true;
+        });
+
+        // Use equal step to place all cards on a straight 45° diagonal (tighter spacing)
+        const viewportWidth =
+            typeof window !== "undefined" ? window.innerWidth : 1920;
+        const isMobile = viewportWidth <= 640;
+        const step = isMobile
+            ? Math.max(80, config.cardBaseSize * 0.1)
+            : Math.max(120, config.cardBaseSize * 0.15);
+        const gapX = step; // horizontal spacing
+        const gapY = step; // vertical spacing
+        const gapZ = config.gap * (isMobile ? 0.22 : 0.3); // slightly tighter in depth on mobile
+
+        const bases: { x: number; y: number }[] = [];
+        const wraps: number[] = [];
+        cards.forEach((card, i) => {
+            const x = i * gapX; // extend to top-right as index increases (diagonal line)
+            const y = -i * gapY;
+            const z = 0; // keep constant depth so apparent size never changes while scrolling
+            const useYaw = parallelEdges ? 0 : yaw;
+            gsap.set(card, {
+                xPercent: -50,
+                yPercent: -50,
+                x,
+                y,
+                z,
+                transformPerspective: localPerspective,
+                transformOrigin: "50% 50%",
+                rotateX: pitch,
+                rotateY: useYaw,
+                rotateZ: roll + (parallelEdges ? yaw : 0),
+                skewX: localSkewX,
+                scale: localScale,
+                opacity: 0,
+            });
+            bases.push({ x, y });
+            wraps[i] = 0;
+        });
+
+        // Intro animation
+        gsap.to(cards, {
+            opacity: 1,
+            duration: 0.8,
+            stagger: 0.05,
+            ease: "power2.out",
+            y: "+=4",
+        });
+
+        // Infinite internal scrolling: move along diagonal and wrap seamlessly
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1920;
+        const vh = typeof window !== "undefined" ? window.innerHeight : 1080;
+        const originalCount = filtered.length || 1;
+        const cycle = step * originalCount; // distance after which sequence repeats
+        const startX = vw * 0.15; // constant offset for framing
+        const startY = vh * 0.15;
+        const recycleAheadX = vw * 0.9;
+        const recycleAheadY = vh * 0.9;
+
+        // Randomize initial start for each filter/length combo so every view starts at a different point
+        const randomKey = `${activeFilter}:${originalCount}`;
+        if (lastRandomizedKey !== randomKey) {
+            const randomStart = Math.random() * cycle;
+            progress = randomStart;
+            targetProgress = randomStart;
+            lastRandomizedKey = randomKey;
+        }
+
+        const update = () => {
+            // Smooth follow – lower factor = smoother/slower
+            const follow = Math.min(0.045, config.inertia);
+            progress += (targetProgress - progress) * follow;
+            // move each card and recycle its base when far off-screen to avoid any jump
+            cards.forEach((card, i) => {
+                let xPos = bases[i].x - startX - progress;
+                let yPos = bases[i].y + startY + progress;
+
+                // Recycle forward (moving left/down out of view)
+                if (xPos < -recycleAheadX || yPos > recycleAheadY) {
+                    bases[i].x += cycle;
+                    bases[i].y -= cycle;
+                    wraps[i] += 1;
+                    xPos += cycle;
+                    yPos -= cycle;
+                }
+                // Recycle backward (moving right/up out of view)
+                if (xPos > recycleAheadX || yPos < -recycleAheadY) {
+                    bases[i].x -= cycle;
+                    bases[i].y += cycle;
+                    wraps[i] -= 1;
+                    xPos -= cycle;
+                    yPos += cycle;
+                }
+                const depthIndex = i + wraps[i] * originalCount;
+                const useYaw2 = parallelEdges ? 0 : yaw;
+                gsap.set(card, {
+                    x: xPos,
+                    y: yPos,
+                    z: 0, // fixed depth during scroll
+                    zIndex: 100000 - depthIndex,
+                    rotateX: pitch,
+                    rotateY: useYaw2,
+                    rotateZ: roll + (parallelEdges ? yaw : 0),
+                    skewX: localSkewX,
+                    scale: localScale,
+                    transformPerspective: localPerspective,
+                    transformOrigin: "50% 50%",
+                });
+
+                // Keep label screen-facing (billboard) regardless of card rotation
+                const label = card.querySelector<HTMLElement>(".floor-label");
+                if (label) {
+                    gsap.set(label, {
+                        rotateX: -pitch,
+                        rotateY: 0,
+                        rotateZ: 0,
+                        z: 16, // raise slightly above front face to avoid clipping
+                        transformPerspective: localPerspective,
+                        transformOrigin: "top left",
+                    });
+                }
+            });
+            rafId = requestAnimationFrame(update);
+        };
+        if (rafId == null) rafId = requestAnimationFrame(update);
+
+        const onWheel = (e: WheelEvent) => {
+            e.preventDefault();
+            const delta =
+                Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : -e.deltaX; // allow shift/trackpads
+            // Slow down wheel sensitivity
+            targetProgress = targetProgress + delta * (step * 0.02);
+        };
+        container.addEventListener("wheel", onWheel, { passive: false });
+        // Arrow/Page keys
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (
+                e.key === "ArrowDown" ||
+                e.key === "PageDown" ||
+                e.key === "ArrowRight"
+            ) {
+                targetProgress = targetProgress + step * 0.3;
+            }
+            if (
+                e.key === "ArrowUp" ||
+                e.key === "PageUp" ||
+                e.key === "ArrowLeft"
+            ) {
+                targetProgress = targetProgress - step * 0.3;
+            }
+        };
+        container.addEventListener("keydown", onKeyDown);
+        // Touch drag
+        let lastY = 0;
+        let dragging = false;
+        let lastX = 0;
+        const onPointerDown = (e: PointerEvent) => {
+            dragging = true;
+            lastY = e.clientY;
+            lastX = e.clientX;
+            (e.target as Element).setPointerCapture?.((e as any).pointerId);
+        };
+        const onPointerUp = (e: PointerEvent) => {
+            dragging = false;
+            (e.target as Element).releasePointerCapture?.((e as any).pointerId);
+        };
+        const onPointerCancel = () => {
+            dragging = false;
+        };
+        const onPointerMove = (e: PointerEvent) => {
+            if (!dragging) return;
+            const dy = lastY - e.clientY;
+            const dx = e.clientX - lastX;
+            lastY = e.clientY;
+            lastX = e.clientX;
+            // Reduce drag speed for smoother feel
+            targetProgress = targetProgress + (dy + dx) * (step * 0.06);
+        };
+        container.addEventListener("pointerdown", onPointerDown);
+        container.addEventListener("pointerup", onPointerUp);
+        container.addEventListener("pointercancel", onPointerCancel);
+        container.addEventListener("pointermove", onPointerMove);
+        // Attach cleanup
+        (container as any)._cleanupBookshelf = () => {
+            container.removeEventListener("wheel", onWheel as any);
+            container.removeEventListener("keydown", onKeyDown as any);
+            container.removeEventListener("pointerdown", onPointerDown as any);
+            container.removeEventListener("pointerup", onPointerUp as any);
+            container.removeEventListener(
+                "pointercancel",
+                onPointerCancel as any,
+            );
+            container.removeEventListener("pointermove", onPointerMove as any);
+            if (rafId != null) cancelAnimationFrame(rafId);
+            rafId = null;
+            try {
+                unsubscribeTransform?.();
+            } catch {}
+        };
+    };
+
+    onMount(() => {
+        // sync filter from URL on load, then wait a tick so cards render before layout
+        try {
+            activeFilter = findFilterForPath(location.pathname);
+        } catch {}
+        tick().then(() => {
+            applyBookshelfLayout();
+        });
+        const onPop = () => {
+            const next = findFilterForPath(location.pathname);
+            if (next !== activeFilter) {
+                activeFilter = next;
+                const cleanup = (container as any)?._cleanupBookshelf;
+                if (cleanup) cleanup();
+                applyBookshelfLayout();
+            }
+        };
+        window.addEventListener("popstate", onPop);
+
+        // Cleanup on teardown
+        const onResize = () => {
+            const fn = (container as any)._cleanupBookshelf;
+            if (fn) fn();
+            applyBookshelfLayout();
+        };
+        if (typeof window !== "undefined") {
+            window.addEventListener("resize", onResize, { passive: true });
+            window.addEventListener("orientationchange", onResize, {
+                passive: true,
+            } as any);
+        }
+
+        return () => {
+            const fn = (container as any)._cleanupBookshelf;
+            if (fn) fn();
+            if (typeof window !== "undefined") {
+                window.removeEventListener("resize", onResize as any);
+                window.removeEventListener(
+                    "orientationchange",
+                    onResize as any,
+                );
+                window.removeEventListener("popstate", onPop as any);
+            }
+        };
+    });
+</script>
+
+<div
+    class="gallery"
+    bind:this={container}
+    style={`--perspective: ${config.perspective}px; --base: ${config.cardBaseSize}px`}
+>
+    <!-- Dark mode toggle at top of category section -->
+    {#if showFilters && isCategoryLoading}
+        <div class="cat-loading" aria-live="polite" aria-busy="true">
+            <div class="ring"></div>
+        </div>
+    {/if}
+    {#if showFilters}
+        <div class="filters" aria-label="Filters">
+            <!-- Dark/light toggle and tags come first -->
+            <button
+                class="dark-toggle"
+                type="button"
+                aria-label="Toggle dark mode"
+                on:click={() => {
+                    const root = document?.documentElement;
+                    if (!root) return;
+                    const next = !root.classList.contains("dark");
+                    root.classList.toggle("dark", next);
+                    try {
+                        localStorage.setItem(
+                            "aperture:theme",
+                            next ? "dark" : "light",
+                        );
+                        window.dispatchEvent(
+                            new CustomEvent("aperture:theme-change", {
+                                detail: next ? "dark" : "light",
+                            }),
+                        );
+                    } catch {}
+                }}
+            >
+                🌙
+            </button>
+            {#each allFilters() as f}
+                <button
+                    class={`filter ${activeFilter === f ? "is-active" : ""}`}
+                    type="button"
+                    on:click={async () => {
+                        if (activeFilter === f) return;
+                        const seq = ++filterLoadSeq;
+                        isCategoryLoading = true;
+                        categoryProgress = 0;
+                        navigateToFilter(f);
+                        activeFilter = f;
+                        await preloadItems(
+                            items.filter((it) => belongsToFilter(it, f)),
+                        );
+                        // small UX delay
+                        await new Promise((r) => setTimeout(r, 1000));
+                        if (seq !== filterLoadSeq) return; // ignore stale
+                        const cleanup = (container as any)?._cleanupBookshelf;
+                        if (cleanup) cleanup();
+                        await tick();
+                        applyBookshelfLayout();
+                        isCategoryLoading = false;
+                    }}
+                >
+                    {f}
+                </button>
+            {/each}
+            <!-- Socials pinned to bottom inside filters -->
+            {#if socials}
+                <div class="socials socials-bottom">
+                    {#if socials.github}
+                        <a
+                            class="social btn"
+                            href={socials.github}
+                            target="_blank"
+                            rel="noopener"
+                            aria-label="GitHub"
+                            title="GitHub"
+                            ><svg viewBox="0 0 24 24" aria-hidden="true"
+                                ><path
+                                    fill="currentColor"
+                                    d="M12 .5a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.83 1.23 1.83 1.23 1.07 1.83 2.8 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.48-1.34-5.48-5.95 0-1.31.47-2.38 1.23-3.22-.12-.3-.53-1.56.12-3.25 0 0 1.01-.32 3.3 1.23a11.4 11.4 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.65 1.69.24 2.95.12 3.25.77.84 1.23 1.91 1.23 3.22 0 4.62-2.82 5.64-5.5 5.94.43.38.81 1.12.81 2.26v3.35c0 .32.21.69.83.57A12 12 0 0 0 12 .5Z"
+                                /></svg
+                            ></a
+                        >
+                    {/if}
+                    {#if socials.twitter}
+                        <a
+                            class="social btn"
+                            href={socials.twitter}
+                            target="_blank"
+                            rel="noopener"
+                            aria-label="Twitter"
+                            title="Twitter"
+                            ><svg viewBox="0 0 24 24" aria-hidden="true"
+                                ><path
+                                    fill="currentColor"
+                                    d="M22.46 6c-.77.35-1.6.58-2.46.69.88-.53 1.56-1.37 1.88-2.37-.83.49-1.76.85-2.74 1.05A4.25 4.25 0 0 0 16.1 4c-2.36 0-4.28 1.92-4.28 4.28 0 .34.04.67.11.99-3.56-.18-6.72-1.88-8.84-4.47-.37.63-.58 1.37-.58 2.16 0 1.49.76 2.8 1.92 3.57-.71-.02-1.37-.22-1.95-.54v.05c0 2.08 1.47 3.82 3.42 4.21-.36.1-.74.15-1.13.15-.28 0-.55-.03-.82-.08.55 1.73 2.16 2.99 4.06 3.02A8.52 8.52 0 0 1 2 19.54 12.03 12.03 0 0 0 8.29 21c7.55 0 11.68-6.26 11.68-11.68 0-.18 0-.35-.01-.53.8-.58 1.5-1.31 2.06-2.14Z"
+                                /></svg
+                            ></a
+                        >
+                    {/if}
+                    {#if socials.youtube}
+                        <a
+                            class="social btn"
+                            href={socials.youtube}
+                            target="_blank"
+                            rel="noopener"
+                            aria-label="YouTube"
+                            title="YouTube"
+                            ><svg viewBox="0 0 24 24" aria-hidden="true"
+                                ><path
+                                    fill="currentColor"
+                                    d="M23.5 6.2s-.23-1.6-.9-2.3c-.86-.9-1.83-.9-2.27-1C16.86 2.5 12 2.5 12 2.5h-.01s-4.86 0-8.32.4c-.44.1-1.41.1-2.27 1-.67.7-.9 2.3-.9 2.3S0 8.1 0 10v1.9c0 1.9.5 3.8.5 3.8s.23 1.6.9 2.3c.86.9 1.98.9 2.48 1 1.8.2 7.62.4 8.12.4h.01s4.86 0 8.32-.4c.44-.1 1.41-.1 2.27-1 .67-.7.9-2.3.9-2.3s.5-1.9.5-3.8V10c0-1.9-.5-3.8-.5-3.8ZM9.75 13.88V7.88l6 3-6 3Z"
+                                /></svg
+                            ></a
+                        >
+                    {/if}
+                    {#if Array.isArray(socials.links)}
+                        {#each socials.links as l}
+                            <a
+                                class="social btn"
+                                href={l.href}
+                                target="_blank"
+                                rel="noopener"
+                                aria-label={l.label || "Link"}
+                                title={l.label || l.href}
+                                ><svg viewBox="0 0 24 24" aria-hidden="true"
+                                    ><path
+                                        fill="currentColor"
+                                        d="M3.9 12a4.1 4.1 0 0 1 4.1-4.1h4v-2h-4A6.1 6.1 0 0 0 1.9 12a6.1 6.1 0 0 0 6.1 6.1h4v-2h-4A4.1 4.1 0 0 1 3.9 12Zm5-1h6.2v2H8.9v-2ZM14 5.9h4A6.1 6.1 0 0 1 24.1 12 6.1 6.1 0 0 1 18 18.1h-4v-2h4a4.1 4.1 0 0 0 4.1-4.1A4.1 4.1 0 0 0 18 7.9h-4v-2Z"
+                                    /></svg
+                                ></a
+                            >
+                        {/each}
+                    {/if}
+                </div>
+            {/if}
+        </div>
+    {/if}
+    {#if filtered.length === 0}
+        <div class="empty-state" role="status" aria-live="polite">
+            Nothing to see here
+        </div>
+    {:else}
+        <div class="track" bind:this={track}>
+            {#each extendedItems as item, i (item.id)}
+                <button
+                    class="card"
+                    style={`--i:${i}`}
+                    type="button"
+                    on:click={() =>
+                        openLightbox(
+                            items.findIndex(
+                                (it) => it.id === item.id.split("__r")[0],
+                            ),
+                        )}
+                >
+                    <div
+                        class="slab"
+                        style={`--t:${config.thickness ?? 12}px; --ea:${config.edgeAmplify ?? 1.4}; --db:${config.depthBlur ?? 0}px;`}
+                    >
+                        <div class="face front">
+                            {#if item.kind === "image" || item.kind === "yt-video"}
+                                <img
+                                    src={item.src}
+                                    alt={item.alt}
+                                    loading="lazy"
+                                    on:load={(e) =>
+                                        setAspectFromImage(
+                                            e.currentTarget as HTMLImageElement,
+                                        )}
+                                />
+                            {:else}
+                                <video
+                                    src={item.src}
+                                    muted
+                                    playsinline
+                                    preload="metadata"
+                                    on:loadedmetadata={(e) =>
+                                        setAspectFromVideo(
+                                            e.currentTarget as HTMLVideoElement,
+                                        )}
+                                ></video>
+                            {/if}
+                        </div>
+                        <div class="face right" aria-hidden="true">
+                            {#if item.kind === "image" || item.kind === "yt-video"}
+                                <img src={item.src} alt="" />
+                            {/if}
+                        </div>
+                        <div class="face top" aria-hidden="true">
+                            {#if item.kind === "image" || item.kind === "yt-video"}
+                                <img src={item.src} alt="" />
+                            {/if}
+                        </div>
+                        {#if getLabelText(item)}
+                            <div class="floor-label" aria-hidden="true">
+                                <span class="floor-label__text"
+                                    >{getLabelText(item)}</span
+                                >
+                            </div>
+                        {/if}
+                    </div>
+                </button>
+            {/each}
+        </div>
+    {/if}
+</div>
+
+<style>
+    .gallery {
+        height: 100vh;
+        perspective: none; /* move perspective to each card to keep apparent orientation constant */
+        overflow: hidden;
+        position: relative;
+    }
+    .track {
+        position: relative;
+        height: 100%;
+        transform-style: preserve-3d;
+        /* Allow only cards to receive pointer events to avoid invisible layers blocking hover */
+        pointer-events: none;
+    }
+    .empty-state {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: var(--chip-fg);
+        font-size: clamp(16px, 2.6vw, 22px);
+        opacity: 0.8;
+        pointer-events: none;
+    }
+    .cat-loading {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        z-index: 1000001;
+        pointer-events: auto;
+        background: #ffffff;
+    }
+    .ring {
+        width: 42px;
+        height: 42px;
+        border-radius: 999px;
+        border: 3px solid rgba(0, 0, 0, 0.12);
+        border-top-color: rgba(0, 0, 0, 0.6);
+        animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+        from {
+            transform: rotate(0deg);
+        }
+        to {
+            transform: rotate(360deg);
+        }
+    }
+    .filters {
+        position: absolute;
+        right: 16px;
+        bottom: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 1000000;
+        pointer-events: auto;
+    }
+    .dark-toggle {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        border: 1px solid #cfcfcf;
+        background: var(--chip-bg);
+        color: #444;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        transition:
+            background-color 0.2s ease,
+            border-color 0.2s ease;
+    }
+    .dark-toggle:hover {
+        background: var(--chip-bg-hover);
+        border-color: #a8a8a8;
+    }
+    .socials {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 6px;
+        justify-content: flex-end;
+    }
+    .btn.social {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        border: 1px solid var(--chip-border);
+        background: var(--chip-bg);
+        color: var(--chip-fg-active);
+        cursor: pointer;
+        text-decoration: none;
+    }
+    .btn.social:hover {
+        background: var(--chip-bg-hover);
+        border-color: var(--chip-border-active);
+    }
+    .btn.social svg {
+        width: 18px;
+        height: 18px;
+        display: block;
+    }
+    .filter {
+        background: var(--chip-bg);
+        color: var(--chip-fg);
+        border: 1px solid var(--chip-border);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        cursor: pointer;
+        transition:
+            border-color 0.2s ease,
+            color 0.2s ease,
+            background-color 0.2s ease;
+    }
+    .filter:hover {
+        border-color: var(--chip-border-active);
+        color: var(--chip-fg-active);
+        background-color: var(--chip-bg-hover);
+    }
+    .filter.is-active {
+        border-color: var(--chip-border-active);
+        color: var(--chip-fg-active);
+        background-color: var(--chip-bg-active);
+    }
+    /* Corner fog overlays */
+    .gallery::before,
+    .gallery::after {
+        content: "";
+        position: absolute;
+        pointer-events: none;
+        z-index: 5;
+    }
+    /* Top-right fog */
+    .gallery::before {
+        top: 0;
+        right: 0;
+        width: 65vw;
+        height: 55vh;
+        background: radial-gradient(
+            120% 100% at 100% 0%,
+            var(--fog-strong),
+            rgba(255, 255, 255, 0) 40%
+        );
+    }
+    /* Bottom-left fog */
+    .gallery::after {
+        left: 0;
+        bottom: 0;
+        width: 70vw;
+        height: 60vh;
+        background: radial-gradient(
+            120% 100% at 0% 100%,
+            var(--fog-weak),
+            rgba(255, 255, 255, 0) 40%
+        );
+    }
+    .card {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform-style: preserve-3d;
+        cursor: zoom-in;
+        will-change: transform;
+        background: transparent;
+        border: 0;
+        padding: 0;
+        z-index: calc(1000 - var(--i, 0));
+        /* Re-enable pointer events on cards and their children */
+        pointer-events: auto;
+    }
+    .slab {
+        width: var(
+            --w,
+            min(76vw, var(--base, 520px), calc(85vh * var(--aspect, 4 / 3)))
+        );
+        height: auto;
+        max-width: var(--base, 520px);
+        max-height: min(var(--base, 520px), 85vh);
+        aspect-ratio: var(--aspect, 4 / 3);
+        border-radius: 0;
+        overflow: visible;
+        background: transparent;
+        box-shadow:
+            0 24px 80px rgba(0, 0, 0, 0.18),
+            0 12px 30px rgba(0, 0, 0, 0.12);
+        transition:
+            transform 0.25s ease,
+            box-shadow 0.25s ease;
+        will-change: transform, box-shadow;
+        position: relative;
+        transform-style: preserve-3d;
+        /* Center slab so thickness extrudes both directions */
+        transform: translateZ(calc(var(--t) * -0.5));
+    }
+    .slab .face {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+    }
+    .slab .front {
+        z-index: 2;
+        background: #0e0e0e;
+        transform: translateZ(calc(var(--t) * 0.5));
+    }
+    .slab .right {
+        width: calc(var(--t) * 1.6);
+        right: 0;
+        left: auto;
+        transform-origin: right center;
+        transform: rotateY(90deg)
+            translateZ(calc(var(--t) * 0.5 + (var(--ea) - 1) * var(--t)));
+        filter: brightness(0.82) blur(var(--db));
+        opacity: 0.95;
+        background: rgba(0, 0, 0, 0.5);
+    }
+    .slab .right::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        pointer-events: none;
+    }
+    .slab .top {
+        height: calc(var(--t) * 1.6);
+        top: 0;
+        bottom: auto;
+        transform-origin: top center;
+        transform: rotateX(-90deg)
+            translateZ(
+                calc(var(--t) * 0.5 + (var(--ea) - 1) * var(--t) + 0.5px)
+            );
+        filter: brightness(0.95) blur(var(--db));
+        z-index: 1;
+        opacity: 0.96;
+        background: var(--card-edge);
+    }
+    .slab .top::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        pointer-events: none;
+    }
+    .slab .top::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.45),
+            rgba(0, 0, 0, 0.18)
+        );
+        pointer-events: none;
+    }
+    /* Floor label: appears like writing on the ground to the right of the slab */
+    .slab .floor-label {
+        position: absolute;
+        left: 100%;
+        top: 85%;
+        margin-left: calc(var(--w, min(76vw, var(--base, 520px))) * 0.12);
+        transform-origin: top left;
+        z-index: 0;
+        pointer-events: none;
+        filter: blur(0.1px);
+        backface-visibility: hidden;
+    }
+    .floor-label__text {
+        display: inline-block;
+        font-size: clamp(20px, 3vw, 44px);
+        color: #a6a6a6;
+        text-transform: uppercase;
+        opacity: 0.45;
+        /* Chalk/paint glow on the floor */
+        text-shadow:
+            0 1px 0 rgba(200, 200, 200, 0.55),
+            0 4px 10px rgba(160, 160, 160, 0.25);
+        white-space: nowrap;
+    }
+    /* Responsive tweak to keep label looking consistent on smaller screens */
+    @media (max-width: 640px) {
+        .slab .floor-label {
+            top: 90%;
+            margin-left: calc(var(--w, min(76vw, var(--base, 520px))) * 0.08);
+        }
+        .floor-label__text {
+            font-size: clamp(16px, 4.2vw, 28px);
+        }
+    }
+    .slab .front img,
+    .slab .front video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+    }
+    .card:hover .slab,
+    .card:focus-visible .slab {
+        /* Slide out like a book to the right while lifting slightly */
+        transform: translateZ(24px) translateX(120px);
+        box-shadow:
+            0 42px 120px rgba(0, 0, 0, 0.24),
+            0 18px 40px rgba(0, 0, 0, 0.18);
+    }
+
+    @media (max-width: 900px) {
+        .card-face {
+            border-radius: 0;
+        }
+    }
+</style>
