@@ -10,6 +10,13 @@ site:
     darkInvert: true
   loading:
     portalSrc: "/aperture.svg"
+    overlayHideDelayMs: 1200
+    overlayFadeDurationMs: 500
+  favicon:
+    src: "/favicon.ico"
+    appleTouchSrc: "/apple-touch-icon.png"
+    maskSrc: "/safari-pinned-tab.svg"
+    maskColor: "#5bbad5"
   siteName: "Aperture"
   locale: "en_US"
   robots: "index,follow"

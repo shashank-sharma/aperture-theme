@@ -26,6 +26,45 @@ npm run preview
 - Example items are in `examples/src/content/items.ts`.
 - The app uses `mountApertureTheme({ target, items, siteConfigRaw })`.
 
+## Site configuration (aperture.config.yml)
+
+You can control site meta, loading overlay, favicon, and socials via YAML. See `examples/aperture.config.yml`.
+
+Example:
+
+```yaml
+site:
+  title: "Aperture – Visual Gallery"
+  description: "Image/Video Gallery"
+  logo:
+    src: "/aperture.svg"
+    darkInvert: true
+  loading:
+    portalSrc: "/aperture.svg"           # image shown in initial loading overlay
+    overlayHideDelayMs: 1200              # wait this long before fading the overlay (default 0)
+    overlayFadeDurationMs: 500            # fade-out duration in ms (default 420)
+  favicon:
+    src: "/favicon.ico"                  # injected as <link rel="icon">
+    appleTouchSrc: "/apple-touch-icon.png" # <link rel="apple-touch-icon">
+    maskSrc: "/safari-pinned-tab.svg"    # <link rel="mask-icon">
+    maskColor: "#5bbad5"                 # color attribute for mask icon
+  siteName: "Aperture"
+  locale: "en_US"
+  robots: "index,follow"
+  socials:
+    github: "https://github.com/shashank-sharma/aperture-theme"
+    twitter: "https://twitter.com/shashank_py"
+    # youtube: "https://youtube.com/@youtube"
+    links:
+      - { label: "Website", href: "https://shashanksharma.xyz" }
+```
+
+How it’s used:
+
+- Loading overlay: `portalSrc` defines the center graphic; `overlayHideDelayMs` and `overlayFadeDurationMs` control timing in `src/App.svelte`.
+- Favicon/app icons: `site.favicon.*` is read in `src/App.svelte` and injected into `<head>` with proper link tags.
+- Title/description/OG/Twitter meta are populated from `site.*`.
+
 ## Use as a package (GitHub Packages)
 
 1. Install
@@ -61,7 +100,7 @@ const items: GalleryItem[] = [ /* your media */ ];
 mountApertureTheme({
   target: document.getElementById('app')!,
   items,
-  // siteConfigRaw: 'site:\n  title: My Site', // optional
+  // siteConfigRaw: 'site:\n  title: My Site', // optional (you can pass your YAML as a string)
   // Optional config overrides (e.g., filters)
   // config: { filters: ['All', 'Gaming', 'Bosses'] },
 });

@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount, tick } from "svelte";
+    import { fade } from "svelte/transition";
     // Social links are provided by parent (App) to avoid bundling a local config file in packages
     export let socials: Record<string, string> = {};
     import gsap from "gsap";
@@ -11,6 +12,10 @@
     export let config: GalleryConfig;
     // Control visibility of filter UI from parent (e.g., hide when lightbox is open)
     export let showFilters: boolean = true;
+    // Mobile UI flag for conditional rendering
+    let isMobileUI = false;
+    // Category dropdown open state (mobile)
+    let catOpen = false;
     // Tag filtering
     let activeFilter: string = "All";
     const allFilters = () => {
@@ -41,6 +46,24 @@
         try {
             history.pushState({ tag: f }, "", target);
         } catch {}
+    };
+    // Centralized filter change logic (used by chips and mobile dropdown)
+    const changeFilter = async (f: string) => {
+        if (activeFilter === f) return;
+        const seq = ++filterLoadSeq;
+        isCategoryLoading = true;
+        categoryProgress = 0;
+        navigateToFilter(f);
+        activeFilter = f;
+        await preloadItems(items.filter((it) => belongsToFilter(it, f)));
+        // small UX delay
+        await new Promise((r) => setTimeout(r, 1000));
+        if (seq !== filterLoadSeq) return; // ignore stale
+        const cleanup = (container as any)?._cleanupBookshelf;
+        if (cleanup) cleanup();
+        await tick();
+        applyBookshelfLayout();
+        isCategoryLoading = false;
     };
     const normalize = (s: string) => s.trim().toLowerCase();
     const otherFilterSet = () =>
@@ -203,7 +226,7 @@
             typeof window !== "undefined" ? window.innerWidth : 1920;
         const isMobile = viewportWidth <= 640;
         const step = isMobile
-            ? Math.max(80, config.cardBaseSize * 0.1)
+            ? Math.max(68, config.cardBaseSize * 0.085)
             : Math.max(120, config.cardBaseSize * 0.15);
         const gapX = step; // horizontal spacing
         const gapY = step; // vertical spacing
@@ -238,7 +261,7 @@
         const originalCount = filtered.length || 1;
         const cycle = step * originalCount; // distance after which sequence repeats
         const startX = vw * 0.15; // constant offset for framing
-        const startY = vh * 0.15;
+        const startY = vh * 0.1;
         const recycleAheadX = vw * 0.9;
         const recycleAheadY = vh * 0.9;
 
@@ -430,8 +453,10 @@
             const dx = e.clientX - lastX;
             lastY = e.clientY;
             lastX = e.clientX;
-            // Reduce drag speed for smoother feel
-            targetProgress = targetProgress + (dy + dx) * (step * 0.05);
+            // Use lower sensitivity on touch screens for more natural scrolling
+            const isTouch = (e as any).pointerType === "touch";
+            const factor = isTouch ? step * 0.012 : step * 0.05;
+            targetProgress = targetProgress + (dy + dx) * factor;
         };
         container.addEventListener("pointerdown", onPointerDown);
         container.addEventListener("pointerup", onPointerUp);
@@ -457,6 +482,14 @@
     };
 
     onMount(() => {
+        // Setup mobile breakpoint listener for conditional UI
+        try {
+            const mq =
+                window.matchMedia && window.matchMedia("(max-width: 640px)");
+            const apply = () => (isMobileUI = !!mq?.matches);
+            apply();
+            mq?.addEventListener?.("change", apply as any);
+        } catch {}
         // sync filter from URL on load, then wait a tick so cards render before layout
         try {
             activeFilter = findFilterForPath(location.pathname);
@@ -507,67 +540,102 @@
     class="gallery"
     bind:this={container}
     style={`--perspective: ${config.perspective}px; --base: ${config.cardBaseSize}px`}
+    role="region"
+    aria-label="Gallery"
+    aria-busy={isCategoryLoading}
 >
     <!-- Dark mode toggle at top of category section -->
     {#if showFilters && isCategoryLoading}
-        <div class="cat-loading" aria-live="polite" aria-busy="true">
+        <div
+            class="cat-loading"
+            aria-live="polite"
+            aria-busy="true"
+            transition:fade={{ duration: 220 }}
+        >
             <div class="ring"></div>
         </div>
     {/if}
     {#if showFilters}
         <div class="filters" aria-label="Filters">
-            <!-- Dark/light toggle and tags come first -->
-            <button
-                class="dark-toggle"
-                type="button"
-                aria-label="Toggle dark mode"
-                on:click={() => {
-                    const root = document?.documentElement;
-                    if (!root) return;
-                    const next = !root.classList.contains("dark");
-                    root.classList.toggle("dark", next);
-                    try {
-                        localStorage.setItem(
-                            "aperture:theme",
-                            next ? "dark" : "light",
-                        );
-                        window.dispatchEvent(
-                            new CustomEvent("aperture:theme-change", {
-                                detail: next ? "dark" : "light",
-                            }),
-                        );
-                    } catch {}
-                }}
-            >
-                🌙
-            </button>
-            {#each allFilters() as f}
-                <button
-                    class={`filter ${activeFilter === f ? "is-active" : ""}`}
-                    type="button"
-                    on:click={async () => {
-                        if (activeFilter === f) return;
-                        const seq = ++filterLoadSeq;
-                        isCategoryLoading = true;
-                        categoryProgress = 0;
-                        navigateToFilter(f);
-                        activeFilter = f;
-                        await preloadItems(
-                            items.filter((it) => belongsToFilter(it, f)),
-                        );
-                        // small UX delay
-                        await new Promise((r) => setTimeout(r, 1000));
-                        if (seq !== filterLoadSeq) return; // ignore stale
-                        const cleanup = (container as any)?._cleanupBookshelf;
-                        if (cleanup) cleanup();
-                        await tick();
-                        applyBookshelfLayout();
-                        isCategoryLoading = false;
-                    }}
-                >
-                    {f}
-                </button>
-            {/each}
+            <!-- Dark mode moved to socials row (bottom-right) -->
+
+            {#if !isMobileUI}
+                <!-- Desktop: collapsed stack (first 4 + stack indicator) -->
+                <div class="chips chips-collapsed">
+                    {#each allFilters().slice(0, 4) as f}
+                        <button
+                            class={`filter ${activeFilter === f ? "is-active" : ""}`}
+                            type="button"
+                            onclick={(e) => {
+                                changeFilter(f);
+                                (e.currentTarget as HTMLElement)?.blur?.();
+                            }}
+                        >
+                            {f}
+                        </button>
+                    {/each}
+                    {#if allFilters().length > 4}
+                        <button
+                            class="filter more-chip"
+                            type="button"
+                            aria-haspopup="true"
+                            aria-expanded="false"
+                            title={`+${allFilters().length - 4} more`}
+                        >
+                            +{allFilters().length - 4} more
+                        </button>
+                    {/if}
+                </div>
+                <!-- Desktop: full list on hover/focus -->
+                <div class="chips chips-full">
+                    {#each allFilters() as f}
+                        <button
+                            class={`filter ${activeFilter === f ? "is-active" : ""}`}
+                            type="button"
+                            onclick={(e) => {
+                                changeFilter(f);
+                                (e.currentTarget as HTMLElement)?.blur?.();
+                            }}
+                        >
+                            {f}
+                        </button>
+                    {/each}
+                </div>
+            {:else}
+                <div class="cat-dropdown">
+                    <button
+                        class="cat-toggle"
+                        type="button"
+                        aria-haspopup="listbox"
+                        aria-expanded={catOpen}
+                        onclick={() => (catOpen = !catOpen)}
+                    >
+                        {activeFilter}
+                        <span class="caret" aria-hidden="true">▾</span>
+                    </button>
+                    {#if catOpen}
+                        <ul class="cat-menu" role="listbox">
+                            {#each allFilters() as f}
+                                <li>
+                                    <button
+                                        role="option"
+                                        aria-selected={activeFilter === f}
+                                        class={`cat-item ${activeFilter === f ? "is-active" : ""}`}
+                                        type="button"
+                                        onclick={() => {
+                                            catOpen = false;
+                                            changeFilter(f);
+                                        }}
+                                    >
+                                        <span class="cat-row">{f}</span>
+                                    </button>
+                                </li>
+                            {/each}
+                        </ul>
+                    {/if}
+                </div>
+            {/if}
+
             <!-- Socials pinned to bottom inside filters -->
             {#if socials}
                 <div class="socials socials-bottom">
@@ -637,6 +705,31 @@
                             >
                         {/each}
                     {/if}
+                    <!-- Dark mode toggle at end of socials row -->
+                    <button
+                        class="dark-toggle"
+                        type="button"
+                        aria-label="Toggle dark mode"
+                        onclick={() => {
+                            const root = document?.documentElement;
+                            if (!root) return;
+                            const next = !root.classList.contains("dark");
+                            root.classList.toggle("dark", next);
+                            try {
+                                localStorage.setItem(
+                                    "aperture:theme",
+                                    next ? "dark" : "light",
+                                );
+                                window.dispatchEvent(
+                                    new CustomEvent("aperture:theme-change", {
+                                        detail: next ? "dark" : "light",
+                                    }),
+                                );
+                            } catch {}
+                        }}
+                    >
+                        🌙
+                    </button>
                 </div>
             {/if}
         </div>
@@ -652,7 +745,7 @@
                     class="card"
                     style={`--i:${i}`}
                     type="button"
-                    on:click={(e) => {
+                    onclick={(e) => {
                         const id =
                             (e.currentTarget as HTMLElement)?.dataset?.itemId ||
                             "";
@@ -670,7 +763,7 @@
                                 class="media-img"
                                 alt=""
                                 loading="lazy"
-                                on:load={(e) =>
+                                onload={(e) =>
                                     setAspectFromImage(
                                         e.currentTarget as HTMLImageElement,
                                     )}
@@ -680,7 +773,7 @@
                                 muted
                                 playsinline
                                 preload="metadata"
-                                on:loadedmetadata={(e) =>
+                                onloadedmetadata={(e) =>
                                     setAspectFromVideo(
                                         e.currentTarget as HTMLVideoElement,
                                     )}
@@ -708,6 +801,7 @@
         perspective: none; /* move perspective to each card to keep apparent orientation constant */
         overflow: hidden;
         position: relative;
+        touch-action: none;
     }
     .track {
         position: relative;
@@ -733,14 +827,14 @@
         place-items: center;
         z-index: 1000001;
         pointer-events: auto;
-        background: #ffffff;
+        background: var(--bg);
     }
     .ring {
         width: 42px;
         height: 42px;
         border-radius: 999px;
-        border: 3px solid rgba(0, 0, 0, 0.12);
-        border-top-color: rgba(0, 0, 0, 0.6);
+        border: 3px solid color-mix(in oklab, var(--fg) 12%, transparent);
+        border-top-color: color-mix(in oklab, var(--fg) 60%, transparent);
         animation: spin 1s linear infinite;
     }
     @keyframes spin {
@@ -758,7 +852,7 @@
         display: flex;
         flex-direction: column;
         gap: 10px;
-        z-index: 1000000;
+        z-index: 1000004;
         pointer-events: auto;
     }
     .dark-toggle {
@@ -806,6 +900,113 @@
         height: 18px;
         display: block;
     }
+    /* Desktop chips layout */
+    .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+    }
+    /* Collapsed vs full behavior on desktop */
+    @media (min-width: 641px) {
+        .chips-full {
+            display: none;
+        }
+        .filters:hover .chips-full,
+        .filters:focus-within .chips-full {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 8px;
+        }
+        .filters:hover .chips-collapsed,
+        .filters:focus-within .chips-collapsed {
+            display: none;
+        }
+        /* Collapsed (first 4) should also be vertical */
+        .chips-collapsed {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 8px;
+        }
+    }
+    /* +N more chip matches filter chip size */
+    .more-chip {
+        font-weight: 500;
+    }
+    /* Ensure native touch gestures are allowed inside filters/dropdown even though .gallery disables them */
+    .filters,
+    .filters * {
+        touch-action: auto;
+    }
+    /* Mobile category dropdown styles */
+    .cat-dropdown {
+        position: relative;
+    }
+    .cat-toggle {
+        background: var(--chip-bg);
+        color: var(--chip-fg);
+        border: 1px solid var(--chip-border);
+        padding: 6px 12px;
+        border-radius: 8px;
+        font-size: 12px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .cat-toggle .caret {
+        opacity: 0.7;
+    }
+    .cat-menu {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        left: auto;
+        width: min(92vw, 420px);
+        max-height: min(60vh, 420px);
+        overflow: auto;
+        list-style: none;
+        padding: 8px;
+        margin: 0;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        background: var(--chip-bg);
+        border: 1px solid var(--chip-border);
+        border-radius: 12px;
+        box-shadow:
+            0 16px 50px rgba(0, 0, 0, 0.18),
+            0 6px 20px rgba(0, 0, 0, 0.12);
+        z-index: 1000006;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
+        transform: translateZ(0);
+    }
+    .cat-item {
+        width: 100%;
+        background: transparent;
+        border: 0;
+        padding: 0;
+        text-align: left;
+        cursor: pointer;
+    }
+    .cat-row {
+        position: relative;
+        display: block;
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: var(--chip-bg);
+        color: var(--chip-fg);
+        border: 1px solid var(--chip-border);
+    }
+    .cat-item.is-active .cat-row {
+        background: var(--chip-bg-active);
+        color: var(--chip-fg-active);
+        border-color: var(--chip-border-active);
+    }
     .filter {
         background: var(--chip-bg);
         color: var(--chip-fg);
@@ -828,6 +1029,21 @@
         border-color: var(--chip-border-active);
         color: var(--chip-fg-active);
         background-color: var(--chip-bg-active);
+    }
+    /* Desktop: soften category controls until hover/focus; socials remain full strength */
+    @media (min-width: 641px) {
+        .filters .filter {
+            opacity: 0.28;
+            transition: opacity 0.2s ease;
+        }
+        .filters:hover .filter,
+        .filters:focus-within .filter {
+            opacity: 1;
+        }
+        /* Keep socials unchanged */
+        .filters .socials {
+            opacity: 1;
+        }
     }
     /* Corner fog overlays */
     .gallery::before,
@@ -985,12 +1201,53 @@
     }
     /* Responsive tweak to keep label looking consistent on smaller screens */
     @media (max-width: 640px) {
+        /* Conservative dropdown anchored to top-right under the toggle */
+        .cat-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            left: auto;
+            width: min(80vw, 360px);
+            max-height: min(60dvh, 420px);
+        }
+        /* Keep filters compact at top-right (no stretch across) */
+        .filters {
+            top: calc(env(safe-area-inset-top) + 8px);
+            right: calc(env(safe-area-inset-right) + 8px);
+            left: auto; /* don't stretch across; keep compact at top-right */
+            bottom: auto;
+            flex-direction: row;
+            align-items: center;
+            gap: 8px;
+            overflow: visible; /* allow dropdown to render outside */
+            padding: 4px 6px;
+            border-radius: 10px;
+            background: transparent;
+            border: 0;
+            -webkit-overflow-scrolling: touch;
+        }
+        .filters::-webkit-scrollbar {
+            display: none;
+        }
+        .socials-bottom {
+            display: none;
+        }
+        .dark-toggle {
+            width: 32px;
+            height: 32px;
+            flex: 0 0 auto;
+        }
+        /* Hide chip list on mobile; use dropdown instead */
+        .filter {
+            display: none;
+        }
+
         .slab .floor-label {
             top: 90%;
             margin-left: calc(var(--w, min(76vw, var(--base, 520px))) * 0.08);
         }
         .floor-label__text {
-            font-size: clamp(16px, 4.2vw, 28px);
+            font-size: clamp(24px, 4.2vw, 28px);
         }
     }
     .slab .front img,
@@ -1003,7 +1260,7 @@
     .card:hover .slab,
     .card:focus-visible .slab {
         /* Slide out like a book to the right while lifting slightly */
-        transform: translateZ(24px) translateX(120px);
+        transform: translateZ(14px) translateX(120px);
         box-shadow:
             0 42px 120px rgba(0, 0, 0, 0.24),
             0 18px 40px rgba(0, 0, 0, 0.18);

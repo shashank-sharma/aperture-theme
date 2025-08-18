@@ -25,12 +25,7 @@
             const stored = localStorage.getItem(THEME_KEY);
             if (stored === "dark") __darkInit = true;
             else if (stored === "light") __darkInit = false;
-            else {
-                const prefersDark =
-                    window.matchMedia &&
-                    window.matchMedia("(prefers-color-scheme: dark)").matches;
-                __darkInit = prefersDark;
-            }
+            else __darkInit = false; // default to light mode
             if (typeof document !== "undefined") {
                 document.documentElement.classList.toggle("dark", __darkInit);
             }
@@ -66,11 +61,20 @@
     })();
     const site = parsed.site || {};
     const socials = site.socials || {};
+    const overlayHideDelayMs = Math.max(
+        0,
+        Number((site as any)?.loading?.overlayHideDelayMs ?? 0),
+    );
+    const overlayFadeDurationMs = Math.max(
+        0,
+        Number((site as any)?.loading?.overlayFadeDurationMs ?? 420),
+    );
     const __base = (import.meta as any).env?.BASE_URL || "/";
     const resolvePath = (p: string) =>
         /^(?:[a-z]+:)?\/\//i.test(p || "")
             ? p
-            : __base.replace(/\/$/, "/") + String(p || "").replace(/^\//, "");
+            : (__base.endsWith("/") ? __base : __base + "/") +
+              String(p || "").replace(/^\//, "");
     const defaultPortalSvg =
         "data:image/svg+xml;utf8," +
         encodeURIComponent(`<?xml version="1.0" encoding="UTF-8"?>
@@ -118,7 +122,7 @@
                 r.setAttribute("content", site.robots);
             }
             // OpenGraph
-            const og = (prop, content) => {
+            const og = (prop: string, content: string | undefined) => {
                 if (!content) return;
                 let t = document.querySelector(`meta[property="og:${prop}"]`);
                 if (!t) {
@@ -134,10 +138,13 @@
             og("site_name", site.siteName || site.title);
             og("type", "website");
             if (base) og("url", base);
-            og("image", site.socialImage || site.logo?.src || "/logo.svg");
+            og(
+                "image",
+                resolvePath(site.socialImage || site.logo?.src || "logo.svg"),
+            );
             if (site.locale) og("locale", site.locale);
             // Twitter Card
-            const tw = (name, content) => {
+            const tw = (name: string, content: string | undefined) => {
                 if (!content) return;
                 let t = document.querySelector(`meta[name="${name}"]`);
                 if (!t) {
@@ -153,8 +160,57 @@
             if (site.description) tw("twitter:description", site.description);
             tw(
                 "twitter:image",
-                site.socialImage || site.logo?.src || "/logo.svg",
+                resolvePath(site.socialImage || site.logo?.src || "logo.svg"),
             );
+            // Favicon & app icons
+            const faviconCfg: any = (site as any)?.favicon;
+            const favSrc =
+                typeof faviconCfg === "string" ? faviconCfg : faviconCfg?.src;
+            const appleTouchSrc =
+                typeof faviconCfg === "object"
+                    ? faviconCfg?.appleTouchSrc
+                    : undefined;
+            const maskSrc =
+                typeof faviconCfg === "object"
+                    ? faviconCfg?.maskSrc
+                    : undefined;
+            const maskColor =
+                typeof faviconCfg === "object"
+                    ? faviconCfg?.maskColor
+                    : undefined;
+            if (favSrc) {
+                let link: HTMLLinkElement | null =
+                    document.querySelector('link[rel="icon"]');
+                if (!link) {
+                    link = document.createElement("link");
+                    link.setAttribute("rel", "icon");
+                    document.head.appendChild(link);
+                }
+                link.setAttribute("href", resolvePath(favSrc));
+            }
+            if (appleTouchSrc) {
+                let l: HTMLLinkElement | null = document.querySelector(
+                    'link[rel="apple-touch-icon"]',
+                );
+                if (!l) {
+                    l = document.createElement("link");
+                    l.setAttribute("rel", "apple-touch-icon");
+                    document.head.appendChild(l);
+                }
+                l.setAttribute("href", resolvePath(appleTouchSrc));
+            }
+            if (maskSrc) {
+                let l: HTMLLinkElement | null = document.querySelector(
+                    'link[rel="mask-icon"]',
+                );
+                if (!l) {
+                    l = document.createElement("link");
+                    l.setAttribute("rel", "mask-icon");
+                    document.head.appendChild(l);
+                }
+                l.setAttribute("href", resolvePath(maskSrc));
+                if (maskColor) l.setAttribute("color", String(maskColor));
+            }
         } catch {}
     });
 
@@ -200,8 +256,11 @@
 
         // Reveal UI once eager set is ready
         isLoaded = true;
-        overlayFading = true;
-        setTimeout(() => (showOverlay = false), 1000);
+        // Hold overlay for configured delay, then fade out, then remove after fade duration
+        setTimeout(() => {
+            overlayFading = true;
+            setTimeout(() => (showOverlay = false), overlayFadeDurationMs);
+        }, overlayHideDelayMs);
 
         // Background load the rest with limited concurrency
         const rest = media.slice(eagerItems.length);
@@ -225,9 +284,9 @@
             }
         });
         // same-tab updates from components
-        window.addEventListener("aperture:theme-change", (e) => {
+        window.addEventListener("aperture:theme-change", (e: Event) => {
             try {
-                const mode = (e && e.detail) || "";
+                const mode = (e as CustomEvent<string>)?.detail || "";
                 if (mode === "dark" || mode === "light") dark = mode === "dark";
             } catch {}
         });
@@ -240,14 +299,19 @@
         class={`loading-overlay ${overlayFading ? "fade-out" : ""}`}
         aria-live="polite"
         aria-busy="true"
+        style={`--overlay-fade:${overlayFadeDurationMs}ms`}
     >
-        <img class="portal-full" src={portalSvg} alt="Loading" />
+        <img class="portal-full" src={portalSvg} alt="" aria-hidden="true" />
     </div>
 {/if}
 
 <main class="app-shell">
     {#if logoSrc}
-        <a class="site-logo" href="/" aria-label="Home">
+        <a
+            class="site-logo"
+            href={(import.meta as any).env?.BASE_URL || "/"}
+            aria-label="Home"
+        >
             <img src={logoSrc} alt="Logo" />
         </a>
     {/if}
@@ -291,6 +355,17 @@
     :global(.dark) .site-logo img {
         filter: invert(1);
     }
+    @media (max-width: 640px) {
+        .site-logo {
+            top: 8px;
+            left: 8px;
+            padding: 4px;
+        }
+        .site-logo img {
+            width: 56px;
+            height: 56px;
+        }
+    }
     .loading-overlay {
         position: fixed;
         inset: 0;
@@ -304,7 +379,7 @@
         place-items: center;
         z-index: 1000005;
         opacity: 1;
-        transition: opacity 420ms ease;
+        transition: opacity var(--overlay-fade, 420ms) ease;
     }
     .loading-overlay.fade-out {
         opacity: 0;
