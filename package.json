@@ -1,6 +1,6 @@
 {
   "name": "@shashank-sharma/aperture-theme",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "private": false,
   "type": "module",
   "description": "Svelte 5 gallery/lightbox theme with 3D transforms and GitHub Pages-ready demo",

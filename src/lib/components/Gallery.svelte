@@ -180,21 +180,7 @@
         return fromCaption || fromAlt || fromSrc || "";
     };
 
-    // Adapt slab aspect to media to avoid letterboxing bars
-    function setAspectFromImage(el: HTMLImageElement) {
-        const slab = el.closest(".slab") as HTMLElement | null;
-        if (!slab) return;
-        const w = el.naturalWidth || 0;
-        const h = el.naturalHeight || 0;
-        if (w > 0 && h > 0) slab.style.setProperty("--aspect", String(w / h));
-    }
-    function setAspectFromVideo(el: HTMLVideoElement) {
-        const slab = el.closest(".slab") as HTMLElement | null;
-        if (!slab) return;
-        const w = (el as any).videoWidth || 0;
-        const h = (el as any).videoHeight || 0;
-        if (w > 0 && h > 0) slab.style.setProperty("--aspect", String(w / h));
-    }
+    // Fixed aspect ratio (no dynamic override to keep size consistent)
 
     // Uniform down-left layout with identical rotation and even spacing
     const applyBookshelfLayout = () => {
@@ -355,18 +341,7 @@
                     ((globalIndex % originalCount) + originalCount) %
                     originalCount;
                 const item = filtered[wrappedIndex];
-                // Pre-set aspect from metadata (if available) to avoid flicker before image load
-                const slab = card.querySelector<HTMLElement>(".slab");
-                if (slab) {
-                    if (item?.width && item?.height) {
-                        slab.style.setProperty(
-                            "--aspect",
-                            String(item.width / item.height),
-                        );
-                    } else {
-                        slab.style.setProperty("--aspect", "1.3333333");
-                    }
-                }
+                // Keep a consistent aspect ratio; no dynamic overrides
                 updateCardMedia(card, item);
 
                 // Keep label screen-facing (billboard)
@@ -751,24 +726,12 @@
                         style={`--t:${config.thickness ?? 12}px; --ea:${config.edgeAmplify ?? 1.4}; --db:${config.depthBlur ?? 0}px;${config.fixedCardWidth ? ` --w:${config.fixedCardWidth}px; --max-w:none;` : ""}${config.fixedCardHeight ? ` --h:${config.fixedCardHeight}px; --max-h:none;` : ""}`}
                     >
                         <div class="face front">
-                            <img
-                                class="media-img"
-                                alt=""
-                                loading="lazy"
-                                onload={(e) =>
-                                    setAspectFromImage(
-                                        e.currentTarget as HTMLImageElement,
-                                    )}
-                            />
+                            <img class="media-img" alt="" loading="lazy" />
                             <video
                                 class="media-video"
                                 muted
                                 playsinline
                                 preload="metadata"
-                                onloadedmetadata={(e) =>
-                                    setAspectFromVideo(
-                                        e.currentTarget as HTMLVideoElement,
-                                    )}
                             ></video>
                         </div>
                         <div class="floor-label" aria-hidden="true">
