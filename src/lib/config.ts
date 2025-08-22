@@ -16,5 +16,5 @@ export const defaultConfig: GalleryConfig = {
   eagerCount: 12,
   preloadConcurrency: 4,
   predictiveBuffer: 8,
-  virtualPoolSize: 64,
+  virtualPoolSize: 12,
 };

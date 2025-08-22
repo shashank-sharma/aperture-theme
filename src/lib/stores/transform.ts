@@ -15,7 +15,7 @@ export const transformStore = writable<TransformState>({
   rotateY: -17,
   rotateZ: 6,
   skewX: 6,
-  scale: 0.6,
+  scale: 0.7,
   perspective: 1230,
   parallelEdges: false,
 });

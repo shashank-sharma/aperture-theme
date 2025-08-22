@@ -151,13 +151,10 @@
     let lastRandomizedKey: string | null = null;
 
     const BASE_REPEAT = 1; // minimal buffer for smooth recycling
-    const MIN_VISIBLE = 15; // ensure we start with at least this many cards rendered
+    const MIN_VISIBLE = 12; // ensure we start with at least this many cards rendered
     // Virtualization: render a small pool of cards and recycle their content as you scroll
-    const DEFAULT_POOL = 64;
-    let poolSize = Math.max(
-        MIN_VISIBLE,
-        Math.min(256, config?.virtualPoolSize ?? DEFAULT_POOL),
-    );
+    const FIXED_POOL = 14;
+    let poolSize = FIXED_POOL; // hard-cap to 12 for testing
     let pool = Array.from({ length: poolSize }, (_, i) => ({
         key: `pool_${i}`,
     }));
@@ -312,31 +309,16 @@
                     (vidFront as HTMLElement).style.display = "block";
                 }
             }
-            // Right and top faces mirror images only
-            const rightImg = card.querySelector<HTMLImageElement>(
-                ".face.right img.media-edge",
-            );
-            const topImg = card.querySelector<HTMLImageElement>(
-                ".face.top img.media-edge",
-            );
-            if (
-                rightImg &&
-                (item.kind === "image" || item.kind === "yt-video")
-            ) {
-                rightImg.src = item.src;
-            } else if (rightImg) {
-                rightImg.removeAttribute("src");
-            }
-            if (topImg && (item.kind === "image" || item.kind === "yt-video")) {
-                topImg.src = item.src;
-            } else if (topImg) {
-                topImg.removeAttribute("src");
-            }
+            // Edges removed for testing; no right/top face updates
             // Label
             const label = card.querySelector<HTMLElement>(".floor-label__text");
             if (label) label.textContent = getLabelText(item);
         };
 
+        const IDLE_EPSILON = 0.1;
+        const ensureRaf = () => {
+            if (rafId == null) rafId = requestAnimationFrame(update);
+        };
         const update = () => {
             // Smooth follow – lower factor = smoother/slower
             const follow = Math.min(0.045, config.inertia);
@@ -400,7 +382,13 @@
                     });
                 }
             });
-            rafId = requestAnimationFrame(update);
+            if (Math.abs(targetProgress - progress) < IDLE_EPSILON) {
+                // Snap to target and go idle to save CPU when not animating
+                progress = targetProgress;
+                rafId = null;
+            } else {
+                rafId = requestAnimationFrame(update);
+            }
         };
         if (rafId == null) rafId = requestAnimationFrame(update);
 
@@ -410,6 +398,7 @@
                 Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : -e.deltaX; // allow shift/trackpads
             // Slow down wheel sensitivity
             targetProgress = targetProgress + delta * (step * 0.016);
+            ensureRaf();
         };
         container.addEventListener("wheel", onWheel, { passive: false });
         // Arrow/Page keys
@@ -420,6 +409,7 @@
                 e.key === "ArrowRight"
             ) {
                 targetProgress = targetProgress + step * 0.3;
+                ensureRaf();
             }
             if (
                 e.key === "ArrowUp" ||
@@ -427,6 +417,7 @@
                 e.key === "ArrowLeft"
             ) {
                 targetProgress = targetProgress - step * 0.3;
+                ensureRaf();
             }
         };
         container.addEventListener("keydown", onKeyDown);
@@ -457,6 +448,7 @@
             const isTouch = (e as any).pointerType === "touch";
             const factor = isTouch ? step * 0.012 : step * 0.05;
             targetProgress = targetProgress + (dy + dx) * factor;
+            ensureRaf();
         };
         container.addEventListener("pointerdown", onPointerDown);
         container.addEventListener("pointerup", onPointerUp);
@@ -779,12 +771,6 @@
                                     )}
                             ></video>
                         </div>
-                        <div class="face right" aria-hidden="true">
-                            <img class="media-edge" alt="" />
-                        </div>
-                        <div class="face top" aria-hidden="true">
-                            <img class="media-edge" alt="" />
-                        </div>
                         <div class="floor-label" aria-hidden="true">
                             <span class="floor-label__text"></span>
                         </div>
@@ -1103,12 +1089,8 @@
         border-radius: 0;
         overflow: visible;
         background: transparent;
-        box-shadow:
-            0 24px 80px rgba(0, 0, 0, 0.18),
-            0 12px 30px rgba(0, 0, 0, 0.12);
-        transition:
-            transform 0.25s ease,
-            box-shadow 0.25s ease;
+        box-shadow: none;
+        transition: transform 0.25s ease;
         will-change: transform, box-shadow;
         position: relative;
         transform-style: preserve-3d;
@@ -1125,56 +1107,7 @@
         background: #0e0e0e;
         transform: translateZ(calc(var(--t) * 0.5));
     }
-    .slab .right {
-        width: calc(var(--t) * 1.6);
-        right: 0;
-        left: auto;
-        transform-origin: right center;
-        transform: rotateY(90deg)
-            translateZ(calc(var(--t) * 0.5 + (var(--ea) - 1) * var(--t)));
-        filter: brightness(0.82) blur(var(--db));
-        opacity: 0.95;
-        background: rgba(0, 0, 0, 0.5);
-    }
-    .slab .right::after {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.5);
-        pointer-events: none;
-    }
-    .slab .top {
-        height: calc(var(--t) * 1.6);
-        top: 0;
-        bottom: auto;
-        transform-origin: top center;
-        transform: rotateX(-90deg)
-            translateZ(
-                calc(var(--t) * 0.5 + (var(--ea) - 1) * var(--t) + 0.5px)
-            );
-        filter: brightness(0.95) blur(var(--db));
-        z-index: 1;
-        opacity: 0.96;
-        background: var(--card-edge);
-    }
-    .slab .top::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.5);
-        pointer-events: none;
-    }
-    .slab .top::after {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: linear-gradient(
-            180deg,
-            rgba(255, 255, 255, 0.45),
-            rgba(0, 0, 0, 0.18)
-        );
-        pointer-events: none;
-    }
+    /* Edges removed for testing: right/top faces not rendered */
     /* Floor label: appears like writing on the ground to the right of the slab */
     .slab .floor-label {
         position: absolute;
@@ -1261,9 +1194,6 @@
     .card:focus-visible .slab {
         /* Slide out like a book to the right while lifting slightly */
         transform: translateZ(14px) translateX(120px);
-        box-shadow:
-            0 42px 120px rgba(0, 0, 0, 0.24),
-            0 18px 40px rgba(0, 0, 0, 0.18);
     }
 
     @media (max-width: 900px) {
