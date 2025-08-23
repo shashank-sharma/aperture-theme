@@ -2,6 +2,27 @@
 
 Reusable Svelte gallery/lightbox theme. Use as a site or consume as a package.
 
+## Demo
+
+![Aperture demo](screenshots/screenshot-gif.gif)
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><strong>Light</strong></td>
+    <td align="center"><strong>Dark</strong></td>
+  </tr>
+  <tr>
+    <td><img src="screenshots/light-screenshot.png" alt="Light screenshot" width="520"></td>
+    <td><img src="screenshots/dark-screenshot.png" alt="Dark screenshot" width="520"></td>
+  </tr>
+  <tr>
+  </tr>
+  <tr>
+  </tr>
+</table>
+
 ## Develop and run the example (local)
 
 The repo now treats the package in the root and the demo/visual app in `examples/`.
@@ -65,7 +86,9 @@ How it’s used:
 - Favicon/app icons: `site.favicon.*` is read in `src/App.svelte` and injected into `<head>` with proper link tags.
 - Title/description/OG/Twitter meta are populated from `site.*`.
 
-## Use as a package (GitHub Packages)
+## Use as a package
+
+We have both NPM package as well as Github package
 
 1. Install
 
